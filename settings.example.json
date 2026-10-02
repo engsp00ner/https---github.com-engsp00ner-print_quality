@@ -1,0 +1,14 @@
+{
+  "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+  "tessdata_dir": "",
+  "ocr_languages": "ara+eng",
+  "ocr_enabled": true,
+  "ssim_threshold": 0.95,
+  "text_similarity_threshold": 0.98,
+  "extra_ink_threshold": 0.002,
+  "missing_ink_threshold": 0.002,
+  "min_defect_area": 40,
+  "min_blob_area": 40,
+  "min_line_length": 100,
+  "registration_tolerance": 1
+}

@@ -1,0 +1,8 @@
+print-defect/
+__pycache__/
+*.py[cod]
+outputs/
+logs/
+.pytest_cache/
+tessdata/
+settings.json
