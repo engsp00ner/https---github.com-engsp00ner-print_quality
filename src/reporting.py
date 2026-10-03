@@ -30,7 +30,10 @@ CSV_FIELDS = ["filename", "printed_path", "status", "inspection_complete", "alig
               "text_similarity", "character_error_rate", "word_error_rate", "ocr_reference_confidence",
               "ocr_printed_confidence", "text_error_count", "extra_ink_pixels", "extra_ink_ratio",
               "missing_ink_pixels", "missing_ink_ratio", "streak_count", "blob_count", "total_defect_count",
-              "processing_time_seconds", "output_dir", "warnings", "decision_reasons"]
+              "processing_time_seconds", "output_dir", "warnings", "decision_reasons",
+              "reference_orientation_status", "reference_correction_clockwise",
+              "printed_orientation_status", "printed_correction_clockwise", "check_statuses",
+              "raw_defect_counts", "displayed_defect_counts", "text_mismatch_reliable"]
 
 
 def _csv_safe(value):
@@ -47,6 +50,12 @@ def export_csv(path, results):
         for result in results:
             row = result.to_dict()
             row.update(result.metrics)
+            row["check_statuses"] = json.dumps({name: check.get("status") for name, check in result.checks.items()},
+                                               ensure_ascii=False, sort_keys=True)
+            for name in ("reference", "printed"):
+                info = result.orientation.get(name, {})
+                row[f"{name}_orientation_status"] = info.get("status", "UNAVAILABLE")
+                row[f"{name}_correction_clockwise"] = info.get("correction_clockwise", "")
             row.update(alignment_status=result.alignment.get("status", "FAILED"),
                        total_defect_count=len(result.defects), warnings=" | ".join(result.warnings),
                        decision_reasons=" | ".join(result.decision_reasons))
@@ -55,7 +64,7 @@ def export_csv(path, results):
 
 def write_batch_report(folder, results, settings, duration, cancelled=False):
     write_json(Path(folder) / "batch_report.json", {
-        "schema_version": 1, "created_at": datetime.now().astimezone().isoformat(),
+        "schema_version": 2, "created_at": datetime.now().astimezone().isoformat(),
         "settings": settings.to_dict(), "duration_seconds": duration, "cancelled": cancelled,
         "total": len(results), "pass": sum(r.status == "PASS" for r in results),
         "defective": sum(r.status == "DEFECTIVE" for r in results),

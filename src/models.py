@@ -23,6 +23,8 @@ class OCRWord:
     confidence: float
     bbox: tuple[int, int, int, int]
     line_id: tuple[int, int, int, int]
+    polygon: list = field(default_factory=list)
+    granularity: str = "word"
 
 
 @dataclass
@@ -33,6 +35,7 @@ class OCRResult:
     confidence: float | None = None
     status: str = "UNAVAILABLE"
     error: str = ""
+    metadata: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -43,6 +46,8 @@ class InspectionResult:
     status: str = "DEFECTIVE"
     inspection_complete: bool = False
     alignment: dict = field(default_factory=dict)
+    orientation: dict = field(default_factory=dict)
+    checks: dict = field(default_factory=dict)
     metrics: dict = field(default_factory=dict)
     defects: list[Defect] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)

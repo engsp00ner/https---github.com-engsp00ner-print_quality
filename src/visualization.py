@@ -13,7 +13,9 @@ def annotate(image, defects):
         x, y = max(0, defect.x), max(0, defect.y)
         right, bottom = min(width - 1, defect.x + defect.width), min(height - 1, defect.y + defect.height)
         cv2.rectangle(overlay, (x, y), (right, bottom), (0, 0, 255), thickness)
-        label = f"{i} {LABELS.get(defect.type, defect.type)}"
+        labels = defect.details.get("labels", [defect.type])
+        readable = "/".join(LABELS.get(item, item) for item in labels)
+        label = f"{i} {readable}"
         (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
         lx = max(0, min(x, width - tw - 4))
         ly = y - 5 if y > th + 8 else min(height - baseline - 1, bottom + th + 5)

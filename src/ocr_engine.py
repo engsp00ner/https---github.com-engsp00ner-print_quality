@@ -4,6 +4,8 @@ import re
 import shutil
 import subprocess
 import threading
+import time
+from contextlib import contextmanager
 from pathlib import Path
 import pytesseract
 from .models import OCRResult, OCRWord
@@ -32,11 +34,10 @@ def validate_tesseract(settings):
     if missing:
         names = ", ".join(f"{language}.traineddata" for language in sorted(missing))
         raise RuntimeError(f"Missing Tesseract language data: {names}. Install these files in the configured tessdata directory.")
-    pytesseract.pytesseract.tesseract_cmd = executable
     return {"executable": executable, "languages": languages, "requested": settings.ocr_languages}
 
 
-class OCREngine:
+class OrientationOCR:
     def __init__(self, settings):
         self.settings = settings
         self.error = ""
@@ -50,30 +51,50 @@ class OCREngine:
                 self.error = str(exc)
                 log.warning(self.error)
 
-    def extract(self, image):
+    @contextmanager
+    def runtime(self, timeout):
+        """Serialize all OCR/OSD calls and include lock waiting in their budget."""
+        if self.error:
+            raise RuntimeError(self.error)
+        started = time.monotonic()
+        if not _OCR_LOCK.acquire(timeout=max(0.0, timeout)):
+            raise RuntimeError("OCR runtime busy; time budget exhausted")
+        previous = os.environ.get("TESSDATA_PREFIX")
+        previous_command = pytesseract.pytesseract.tesseract_cmd
+        try:
+            remaining = timeout - (time.monotonic() - started)
+            if remaining <= 0:
+                raise RuntimeError("OCR time budget exhausted")
+            if self.settings.tessdata_dir:
+                os.environ["TESSDATA_PREFIX"] = self.settings.tessdata_dir
+            pytesseract.pytesseract.tesseract_cmd = self.validation["executable"]
+            yield remaining
+        finally:
+            pytesseract.pytesseract.tesseract_cmd = previous_command
+            if previous is None:
+                os.environ.pop("TESSDATA_PREFIX", None)
+            else:
+                os.environ["TESSDATA_PREFIX"] = previous
+            _OCR_LOCK.release()
+
+    def orientation_probe(self, image, timeout):
+        with self.runtime(timeout) as remaining:
+            return pytesseract.image_to_osd(for_ocr(image), output_type=pytesseract.Output.DICT,
+                                            timeout=remaining)
+
+    def extract(self, image, *, psm=None, timeout=None):
+        """Recognize pixels as supplied; page normalization belongs to inspection."""
         if self.error:
             return OCRResult(error=self.error)
         try:
-            options = f"--oem 1 --psm {self.settings.ocr_psm}"
+            options = f"--oem 1 --psm {self.settings.ocr_psm if psm is None else psm}"
             # pytesseract 0.3.13 uses non-POSIX shlex on Windows, retaining quotes in
             # --tessdata-dir arguments. A scoped environment override supports spaces
             # and Unicode paths without injecting literal quotes into the executable.
-            with _OCR_LOCK:
-                previous = os.environ.get("TESSDATA_PREFIX")
-                previous_command = pytesseract.pytesseract.tesseract_cmd
-                try:
-                    if self.settings.tessdata_dir:
-                        os.environ["TESSDATA_PREFIX"] = self.settings.tessdata_dir
-                    pytesseract.pytesseract.tesseract_cmd = self.validation["executable"]
-                    data = pytesseract.image_to_data(for_ocr(image), lang=self.settings.ocr_languages,
-                                                     config=options, output_type=pytesseract.Output.DICT,
-                                                     timeout=self.settings.ocr_timeout)
-                finally:
-                    pytesseract.pytesseract.tesseract_cmd = previous_command
-                    if previous is None:
-                        os.environ.pop("TESSDATA_PREFIX", None)
-                    else:
-                        os.environ["TESSDATA_PREFIX"] = previous
+            with self.runtime(self.settings.ocr_timeout if timeout is None else timeout) as remaining:
+                data = pytesseract.image_to_data(for_ocr(image), lang=self.settings.ocr_languages,
+                                                 config=options, output_type=pytesseract.Output.DICT,
+                                                 timeout=remaining)
             words = []
             lines = {}
             for i, text in enumerate(data["text"]):
@@ -91,3 +112,17 @@ class OCREngine:
         except (RuntimeError, OSError, pytesseract.TesseractError) as exc:
             log.warning("OCR failed: %s", exc)
             return OCRResult(status="FAILED", error=str(exc))
+
+
+class OCREngine:
+    """Final recognition only. OrientationOCR owns the separate Tesseract dependency."""
+
+    def __init__(self, settings):
+        self.settings = settings
+        self.error = '' if settings.ocr_enabled else 'OCR explicitly disabled'
+
+    def extract(self, image):
+        if not self.settings.ocr_enabled:
+            return OCRResult(status="UNAVAILABLE", error="OCR explicitly disabled; content inspection is incomplete.")
+        from .paddle_runtime import extract
+        return extract(image, self.settings)

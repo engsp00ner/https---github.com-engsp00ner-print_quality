@@ -6,11 +6,26 @@ import shutil
 import tempfile
 import unittest
 from config import load_settings
-from src.ocr_engine import OCREngine, validate_tesseract
+from src.ocr_engine import OCREngine, OrientationOCR, validate_tesseract
+from src.orientation import OrientationDetector, rotate_page, RESOLVED
+import numpy as np
 from tools.create_test_defects import create_reference
 
 
 class OCRRuntimeTests(unittest.TestCase):
+    def test_live_mixed_script_orientation_all_quarter_turns(self):
+        settings = load_settings()
+        ocr = OrientationOCR(settings)
+        if ocr.error:
+            self.skipTest(ocr.error)
+        upright = create_reference()
+        detector = OrientationDetector(settings, ocr)
+        for angle in (0, 90, 180, 270):
+            normalized, info = detector.detect(rotate_page(upright, angle))
+            self.assertIn(info["status"], RESOLVED, info)
+            self.assertEqual(info["correction_clockwise"], (-angle) % 360)
+            np.testing.assert_array_equal(normalized, upright)
+
     def test_real_ocr_with_spaces_in_data_path_and_environment_restored(self):
         settings = load_settings()
         try:
@@ -25,7 +40,7 @@ class OCRRuntimeTests(unittest.TestCase):
                     self.skipTest("Cannot locate model files for the path-with-spaces test")
                 shutil.copy2(source, Path(folder) / source.name)
             before = os.environ.get("TESSDATA_PREFIX")
-            engine = OCREngine(replace(settings, tessdata_dir=folder, ocr_enabled=True))
+            engine = OrientationOCR(replace(settings, tessdata_dir=folder, ocr_enabled=True))
             result = engine.extract(create_reference())
             self.assertEqual(result.status, "SUCCESS", result.error)
             self.assertTrue(result.words)

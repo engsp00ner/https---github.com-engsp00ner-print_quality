@@ -131,7 +131,9 @@ class CoreTests(unittest.TestCase):
         merged = merge_defects(defects, self.settings)
         self.assertEqual(len(merged), 2)
         self.assertEqual(merged[0].bbox, (10, 10, 40, 20))
-        self.assertIn("EXTRA_INK", merged[0].details["labels"])
+        self.assertNotIn("EXTRA_INK", merged[0].details["labels"])
+        self.assertIn("EXTRA_INK", merged[0].details["overlapping_visual_evidence"])
+        self.assertEqual(merged[0].details["evidence"][-1]["classification"], "text_change_visual_evidence")
         self.assertEqual(len(merged[0].details["evidence"]), 3)
 
 

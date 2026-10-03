@@ -8,12 +8,22 @@ import numpy as np
 from config import Settings
 from src.image_loader import save_image, load_image
 from src.inspection_engine import InspectionEngine
-from src.models import OCRResult
+from src.models import OCRResult, OCRWord
 from src.reporting import create_batch_dir, write_batch_report
 from tools.create_test_defects import create_reference, apply_defects
 
 
 class EngineTests(unittest.TestCase):
+    @staticmethod
+    def ocr(text="reference text", confidence=90):
+        words = [OCRWord(word, confidence, (20 + index * 100, 20, 80, 24), (1, 1, 1, 1))
+                 for index, word in enumerate(text.split())]
+        return OCRResult(text, text, words, confidence, "SUCCESS")
+
+    @staticmethod
+    def inspect(settings, reference, printed, ocr_results):
+        return InspectionEngine(settings, 0, {printed: 0}), patch(
+            "src.ocr_engine.OCREngine.extract", side_effect=ocr_results)
     def test_end_to_end_cache_reports_resolution_and_red_boxes(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -23,8 +33,8 @@ class EngineTests(unittest.TestCase):
             save_image(clean, reference)
             save_image(bad, apply_defects(reference, ["vertical", "blob", "missing"]))
             settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
-            with patch("src.ocr_engine.OCREngine.extract", return_value=OCRResult(status="SUCCESS")) as extract:
-                engine = InspectionEngine(settings)
+            with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()) as extract:
+                engine = InspectionEngine(settings, 0, {clean: 0, bad: 0})
                 folder = create_batch_dir(root)
                 good_result = engine.inspect(ref, clean, folder)
                 bad_result = engine.inspect(ref, bad, folder)
@@ -41,6 +51,112 @@ class EngineTests(unittest.TestCase):
             write_batch_report(folder, [good_result, bad_result], settings, 1.0)
             self.assertTrue((folder / "batch_report.csv").is_file())
             self.assertEqual(json.loads((folder / "batch_report.json").read_text(encoding="utf-8"))["total"], 2)
+
+    def test_text_and_separate_extra_ink_are_preserved_and_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = create_reference()
+            printed = reference.copy()
+            printed[900:940, 900:960] = 0  # separate from synthetic text word boxes
+            ref, sample = root / "reference.png", root / "sample.png"
+            save_image(ref, reference)
+            save_image(sample, printed)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            engine = InspectionEngine(settings, 0, {sample: 0})
+            with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("Order 12584"), self.ocr("Order 12534")]):
+                result = engine.inspect(ref, sample)
+            self.assertTrue(result.inspection_complete, result.decision_reasons)
+            self.assertGreater(result.metrics["text_error_count"], 0)
+            self.assertGreater(result.metrics["extra_ink_count"], 0)
+            self.assertEqual(result.checks["text_comparison"]["status"], "COMPLETED")
+            self.assertEqual(result.checks["ink"]["status"], "COMPLETED")
+            self.assertIn("TEXT_ERROR", result.metrics["displayed_defect_counts"])
+            self.assertIn("EXTRA_INK", result.metrics["displayed_defect_counts"])
+            report = json.loads((Path(result.output_dir) / "report.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["checks"]["ink"]["status"], "COMPLETED")
+            self.assertIn("EXTRA_INK", report["metrics"]["displayed_defect_counts"])
+
+    def test_text_only_and_visual_only_checks_run_independently(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = create_reference()
+            ref, text_only, extra_only = root / "ref.png", root / "text.png", root / "extra.png"
+            save_image(ref, reference)
+            save_image(text_only, reference)
+            extra = reference.copy()
+            extra[900:940, 900:960] = 0
+            save_image(extra_only, extra)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("A 1"), self.ocr("A 2")]):
+                text = InspectionEngine(settings, 0, {text_only: 0}).inspect(ref, text_only)
+            self.assertGreater(text.metrics["text_error_count"], 0)
+            self.assertEqual(text.metrics["extra_ink_count"], 0)
+            self.assertEqual(text.checks["ink"]["status"], "COMPLETED")
+            with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()):
+                visual = InspectionEngine(settings, 0, {extra_only: 0}).inspect(ref, extra_only)
+            self.assertEqual(visual.metrics["text_error_count"], 0)
+            self.assertGreater(visual.metrics["extra_ink_count"], 0)
+            self.assertEqual(visual.checks["text_comparison"]["status"], "COMPLETED")
+
+    def test_text_mismatch_plus_fading_and_low_confidence_is_review_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = create_reference()
+            reference[900:940, 900:960] = 0
+            faded = reference.copy()
+            faded[900:940, 900:960] = 140
+            ref, path = root / "ref.png", root / "faded.png"
+            save_image(ref, reference)
+            save_image(path, faded)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            with self.assertLogs("src.inspection_engine", "INFO") as logs, \
+                 patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("Order 12584", 20), self.ocr("Order 12534", 20)]):
+                result = InspectionEngine(settings, 0, {path: 0}).inspect(ref, path)
+            self.assertGreater(result.metrics["text_error_count"], 0)
+            self.assertGreater(result.metrics["missing_ink_count"], 0)
+            self.assertEqual(result.checks["text_comparison"]["status"], "REVIEW_REQUIRED")
+            self.assertFalse(result.metrics["text_mismatch_reliable"])
+            self.assertFalse(result.inspection_complete)
+            self.assertTrue(any("Check ink completed" in line for line in logs.output))
+
+    def test_ocr_failure_and_visual_or_ssim_failure_do_not_erase_other_checks(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = create_reference()
+            sample = reference.copy()
+            sample[900:940, 900:960] = 0
+            ref, path = root / "ref.png", root / "sample.png"
+            save_image(ref, reference)
+            save_image(path, sample)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr(), OCRResult(status="FAILED", error="test OCR failure")]):
+                failed_ocr = InspectionEngine(settings, 0, {path: 0}).inspect(ref, path)
+            self.assertFalse(failed_ocr.inspection_complete)
+            self.assertEqual(failed_ocr.checks["ink"]["status"], "COMPLETED")
+            self.assertGreater(failed_ocr.metrics["extra_ink_count"], 0)
+            with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()), \
+                 patch("src.inspection_engine.compare_ssim", side_effect=RuntimeError("test SSIM failure")):
+                failed_ssim = InspectionEngine(settings, 0, {path: 0}).inspect(ref, path)
+            self.assertFalse(failed_ssim.inspection_complete)
+            self.assertEqual(failed_ssim.checks["ssim"]["status"], "FAILED")
+            self.assertEqual(failed_ssim.checks["ink"]["status"], "COMPLETED")
+            self.assertGreater(failed_ssim.metrics["extra_ink_count"], 0)
+
+    def test_failed_alignment_skips_pixel_checks_without_confirmed_visual_defects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reference = create_reference()
+            ref, path = root / "ref.png", root / "sample.png"
+            save_image(ref, reference)
+            save_image(path, apply_defects(reference, ["vertical", "blob"]))
+            failed_alignment = {"status": "FAILED", "warnings": ["test alignment failure"], "coverage": 0.0}
+            with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()), \
+                 patch("src.inspection_engine.align", return_value=(reference, np.zeros(reference.shape[:2], np.uint8), failed_alignment)):
+                result = InspectionEngine(replace(Settings(), output_dir=str(root), ocr_enabled=False), 0, {path: 0}).inspect(ref, path)
+            self.assertFalse(result.inspection_complete)
+            self.assertEqual(result.checks["ink"]["status"], "SKIPPED")
+            self.assertEqual(result.metrics["extra_ink_count"], 0)
+            self.assertEqual(result.metrics["missing_ink_count"], 0)
 
     def test_missing_ocr_and_bad_input_cannot_pass(self):
         with tempfile.TemporaryDirectory() as directory:

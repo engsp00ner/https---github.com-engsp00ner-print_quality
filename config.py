@@ -16,6 +16,16 @@ class Settings:
     ocr_psm: int = 3
     ocr_timeout: int = 90
     ocr_min_confidence: float = 45.0
+    paddle_python: str = str(Path.home() / '.na3em_ocr_benchmark/paddle/Scripts/python.exe')
+    paddle_model_dir: str = str(Path.home() / '.paddlex/official_models')
+    paddle_min_confidence: float = 80.0
+    auto_orientation: bool = True
+    orientation_timeout: float = 30.0
+    orientation_max_dimension: int = 2000
+    orientation_osd_confidence: float = 15.0
+    orientation_min_characters: int = 12
+    orientation_min_confidence: float = 55.0
+    orientation_min_margin: float = 0.20
     output_dir: str = str(ROOT / "outputs")
     supported_extensions: tuple = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
     max_image_pixels: int = 40_000_000
@@ -49,16 +59,22 @@ class Settings:
     merge_containment: float = 0.65
 
     def __post_init__(self):
+        if not 0 <= self.paddle_min_confidence <= 100:
+            raise ValueError('paddle_min_confidence must be between 0 and 100')
         for name in ("ssim_threshold", "text_similarity_threshold", "extra_ink_threshold",
                      "missing_ink_threshold", "match_ratio", "min_inlier_ratio", "min_coverage",
-                     "ssim_difference_threshold", "merge_iou", "merge_containment", "blob_min_fill"):
+                     "ssim_difference_threshold", "merge_iou", "merge_containment", "blob_min_fill",
+                     "orientation_min_margin"):
             if not 0 <= getattr(self, name) <= 1:
                 raise ValueError(f"{name} must be between 0 and 1")
         for name in ("min_defect_area", "min_blob_area", "min_line_length", "orb_features",
                      "alignment_max_dimension", "min_matches", "ocr_timeout", "max_image_pixels",
-                     "component_close_size", "ecc_iterations"):
+                     "component_close_size", "ecc_iterations", "orientation_timeout",
+                     "orientation_max_dimension", "orientation_min_characters"):
             if getattr(self, name) < 1:
                 raise ValueError(f"{name} must be positive")
+        if not 0 <= self.orientation_min_confidence <= 100 or self.orientation_osd_confidence < 0:
+            raise ValueError("Invalid orientation confidence threshold")
         if not 0 <= self.registration_tolerance <= 10:
             raise ValueError("registration_tolerance must be between 0 and 10")
         if any(not 0 <= getattr(self, name) <= 255 for name in ("ink_threshold", "intensity_difference", "ink_density_difference")):

@@ -6,3 +6,7 @@ logs/
 .pytest_cache/
 tessdata/
 settings.json
+*.pdf
+*.png
+*.jpeg
+*.jpg

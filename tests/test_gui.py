@@ -1,4 +1,4 @@
-"""Exercise signals, progressive results, filtering, previews and cancellation."""
+"""Focused three-window workflow tests with explicitly synthetic OCR fixtures."""
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from dataclasses import replace
@@ -7,88 +7,158 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-import numpy as np
-from PySide6.QtCore import QTimer
-from PySide6.QtTest import QTest
+from PySide6.QtCore import Qt, QTimer, QThreadPool
 from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
 from config import Settings
-from gui.main_window import MainWindow
-from src.image_loader import save_image
-from src.models import OCRResult
+from gui.main_window import MainWindow, OrientationDialog
+from gui.controller import InspectionController
+from gui.results_window import ResultsWindow
+from src.models import OCRResult, OCRWord
+from src.inspection_session import result_state
+from src.inspection_archive import load_inspection
+from tests.test_archive import synthetic_session
 
 
 class GUITests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
+        cls.app.setStyle("Fusion")
 
-    def wait_for_worker(self, window):
-        deadline = time.monotonic() + 20
-        while window.worker is not None and time.monotonic() < deadline:
+    def wait(self, condition, seconds=30):
+        deadline = time.monotonic() + seconds
+        while not condition() and time.monotonic() < deadline:
             self.app.processEvents()
-            QTest.qWait(10)
-        if window.worker is not None:
-            window.worker.requestInterruption()
-            window.worker.wait(10000)
-            self.fail("Worker did not finish before the timeout")
+            time.sleep(.005)
+        self.assertTrue(condition(), "Timed out waiting for GUI work")
 
-    def test_threaded_results_filter_tabs_and_responsive_timer(self):
+    def drain(self, window):
+        self.wait(lambda: not window.controller.busy and not window.controller.jobs and not window.samples.jobs and
+                  not any(w.queue.jobs for w in window.result_windows) and not (window.live and window.live.queue.jobs) and
+                  not QThreadPool.globalInstance().activeThreadCount())
+
+    @staticmethod
+    def ocr():
+        return OCRResult("clean", "clean", [OCRWord("clean", 90, (10, 10, 30, 20), (1, 1, 1, 1))], 90, "SUCCESS")
+
+    def test_selection_dedup_validation_orientation_and_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            ref = root / "reference.png"
-            image = np.full((200, 240, 3), 255, np.uint8)
-            save_image(ref, image)
+            session = synthetic_session(root)
+            path = Path(session.reference)
+            window = MainWindow(Settings())
+            window.show()
+            window.set_reference(path)
+            window.set_printed_paths([path, path])
+            self.wait(lambda: window.start_button.isEnabled())
+            self.assertEqual(len(window.printed_paths), 1)
+            self.assertFalse(window.samples.item(0).icon().isNull())
+            dialog = OrientationDialog(path, [path], None, {}, window)
+            dialog.choices[0][1].setCurrentIndex(2)
+            dialog.choices[1][1].setCurrentIndex(3)
+            self.assertEqual(dialog.values(), (90, {str(path.resolve()): 180}))
+            window.samples.setCurrentRow(0)
+            window.remove_sample()
+            self.assertFalse(window.start_button.isEnabled())
+            window.set_printed_paths([root / "missing.png"])
+            self.drain(window)
+            self.assertFalse(window.start_button.isEnabled())
+            window.remove_reference()
+            self.assertIsNone(window.reference_path)
+            window.close()
+
+    def test_threaded_real_engine_stages_no_concurrent_runs_and_archive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = synthetic_session(root)
+            path = Path(session.reference)
             window = MainWindow(replace(Settings(), output_dir=str(root), ocr_enabled=False))
             window.show()
-            window.reference_path = ref
-            window.set_printed_paths([ref, root / "missing.png"])
-            self.assertTrue(window.start_button.isEnabled())
-            ticks = []
+            window.set_reference(path)
+            window.set_printed_paths([path])
+            self.wait(lambda: window.start_button.isEnabled())
+            window.reference_orientation = 0
+            window.printed_orientations = {str(path): 0}
+            stages, ticks = [], []
+            window.controller.stage.connect(stages.append)
             timer = QTimer()
             timer.timeout.connect(lambda: ticks.append(1))
             timer.start(5)
-            with patch("src.ocr_engine.OCREngine.extract", return_value=OCRResult(status="SUCCESS")):
+            with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()):
                 window.start_inspection()
+                worker = window.worker
+                window.start_inspection()
+                self.assertIs(worker, window.worker)
                 self.assertFalse(window.start_button.isEnabled())
-                self.wait_for_worker(window)
+                window.live.close()
+                self.assertFalse(window.live.isVisible())
+                self.assertTrue(window.controller.busy)
+                window.show_live()
+                self.drain(window)
             timer.stop()
-            self.assertTrue(ticks, "Main-thread event loop must remain responsive")
-            self.assertEqual(window.table.rowCount(), 2)
-            self.assertEqual(window.results[0].status, "PASS")
-            self.assertEqual(window.results[1].status, "DEFECTIVE")
-            window.filter.setCurrentText("DEFECTIVE")
-            self.assertTrue(window.table.isRowHidden(0))
-            self.assertFalse(window.table.isRowHidden(1))
-            window.filter.setCurrentText("All")
-            window.table.selectRow(0)
-            self.app.processEvents()
-            self.assertIsNotNone(window.viewers["defect_overlay"].path)
-            for index, (_, key) in enumerate(window.TABS):
-                window.tabs.setCurrentIndex(index)
-                self.assertIsNotNone(window.viewers[key].path)
-            self.assertTrue(window.export_button.isEnabled())
-            self.assertTrue((window.output_folder / "batch_report.csv").exists())
-            self.assertTrue(window.start_button.isEnabled())
+            self.assertTrue(ticks)
+            result = window.controller.session
+            self.assertEqual(result.samples[0]["state"], "Passed")
+            self.assertTrue(Path(result.archive_path).is_file())
+            self.assertTrue((Path(result.folder) / "batch_report.csv").is_file())
+            self.assertTrue(any(e["stage"] == "ink" and e["status"] == "RUNNING" for e in stages))
+            self.assertFalse(window.live.sample.timer.isActive())
+            self.assertEqual(len(window.result_windows), 1)
+            self.assertIn("No defects detected", window.result_windows[0].findings_label.text())
             window.close()
 
-    def test_cancel_preserves_completed_reports(self):
+    def test_markers_table_frames_and_scan_geometry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            session = synthetic_session(Path(directory))
+            controller = InspectionController()
+            window = ResultsWindow(session, controller)
+            window.resize(1366, 768)
+            window.show()
+            self.wait(lambda: bool(window.viewer.markers))
+            marker = window.viewer.markers["1"]
+            self.assertEqual(marker.rect().x() * window.viewer.preview_scale, 130)
+            window.table.selectRow(0)
+            self.assertTrue(marker.isSelected())
+            window.table.clearSelection()
+            point = window.viewer.view.mapFromScene(marker.rect().topLeft())
+            QTest.mouseClick(window.viewer.view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+            self.assertEqual(window.table.currentRow(), 0)
+            window.viewer.view.zoom(1.25)
+            window.resize(1200, 740)
+            self.assertEqual(marker.rect().x() * window.viewer.preview_scale, 130)
+            window.viewer.start_scan()
+            window.viewer.animate()
+            self.assertTrue(window.viewer.view.sceneRect().contains(window.viewer.beam.rect()))
+            window.viewer.stop_scan()
+            window.view_choice.setCurrentIndex(1)
+            self.wait(lambda: not QThreadPool.globalInstance().activeThreadCount())
+            self.app.processEvents()
+            self.assertFalse(window.viewer.markers)
+            window.filter.setCurrentText("Passed")
+            self.assertEqual(window.table.rowCount(), 0)
+            self.assertIsNone(window.viewer.path)
+            self.wait(lambda: not window.queue.jobs)
+            window.close()
+
+    def test_cancel_partial_and_failed_review_states(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            paths = []
-            for i in range(8):
-                path = root / f"page{i}.png"
-                save_image(path, np.full((500, 500, 3), 255, np.uint8))
-                paths.append(path)
-            window = MainWindow(replace(Settings(), output_dir=str(root), ocr_enabled=False))
-            window.reference_path = paths[0]
-            window.set_printed_paths(paths)
-            window.start_inspection()
-            QTimer.singleShot(5, window.cancel)
-            self.wait_for_worker(window)
-            self.assertLess(len(window.results), len(paths))
-            self.assertIn("cancelled", window.batch_label.text())
-            self.assertTrue((window.output_folder / "batch_report.json").exists())
-            window.close()
+            session = synthetic_session(root)
+            path = Path(session.reference)
+            controller = InspectionController()
+            # The controller accepts repeated paths here only to exercise queued cancellation.
+            controller.started_sample.connect(lambda _: controller.cancel())
+            controller.start(path, [path, path], replace(Settings(), output_dir=str(root), ocr_enabled=False), 0, {str(path): 0})
+            self.wait(lambda: not controller.busy and not controller.jobs)
+            self.assertEqual(controller.session.status, "Cancelled")
+            self.assertEqual(controller.session.samples[0]["state"], "Review required")
+            self.assertEqual(controller.session.samples[1]["state"], "Cancelled")
+            loaded = load_inspection(controller.session.archive_path)
+            self.assertEqual(loaded.samples[1]["state"], "Cancelled")
+            loaded.storage.cleanup()
+            self.assertEqual(result_state({"decision_reasons": ["Processing error; manual review required"]}), "Failed")
+            self.assertEqual(result_state({"status": "PASS", "inspection_complete": False}), "Review required")
 
 
 if __name__ == "__main__":

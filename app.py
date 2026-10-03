@@ -41,6 +41,7 @@ def main():
     from PySide6.QtWidgets import QApplication
     from gui.main_window import MainWindow
     app = QApplication(sys.argv)
+    app.setStyle("Fusion")
     app.setApplicationName("Print Defect Inspection System")
     window = MainWindow(settings)
     window.show()

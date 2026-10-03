@@ -7,7 +7,8 @@ import sys
 import pymupdf
 
 
-def convert(pdf_path: Path, dpi: int = 200, password: str = "", output_dir: Path = None) -> Path:
+def convert(pdf_path: Path, dpi: int = 200, password: str = "", output_dir: Path = None,
+            progress_callback=None) -> Path:
     pdf_path = pdf_path.expanduser().resolve()
     if not pdf_path.is_file():
         raise ValueError(f"File not found: {pdf_path}")
@@ -22,11 +23,15 @@ def convert(pdf_path: Path, dpi: int = 200, password: str = "", output_dir: Path
             raise ValueError("PDF is password protected. Use --password.")
         output_dir.mkdir(parents=True, exist_ok=True)
         for index, page in enumerate(document, start=1):
+            if progress_callback:
+                progress_callback(index - 1, len(document), page.number + 1)
             output = output_dir / f"page_{index:04d}.png"
             if output.exists():
                 raise FileExistsError(f"Image already exists: {output}")
             pixmap = page.get_pixmap(dpi=dpi, colorspace=pymupdf.csRGB, alpha=False)
             pixmap.save(output)
+            if progress_callback:
+                progress_callback(index, len(document), index)
             print(f"[{index}/{len(document)}] {output.name}")
     return output_dir
 

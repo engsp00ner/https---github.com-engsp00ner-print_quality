@@ -40,7 +40,7 @@ Requirements: Windows 11, Python 3.14, packages in `requirements.txt`, and Tesse
 
 ## Tesseract and Arabic
 
-`pytesseract` is a wrapper; the Tesseract executable is a separate dependency. The default executable path is configured once in `config.py`: `C:\Program Files\Tesseract-OCR\tesseract.exe`. Override it in **Settings**, `settings.json`, or the `TESSERACT_CMD` environment variable. A supplied `settings.json` uses project-local language data in `D:\masters\code\tessdata`.
+`pytesseract` is a wrapper; the Tesseract executable is a separate dependency. The default executable path is configured once in `config.py`: `C:\Program Files\Tesseract-OCR\tesseract.exe`. Override it in **Settings**, `settings.json`, or the `TESSERACT_CMD` environment variable. Set `tessdata_dir` to this checkout's absolute `tessdata` directory; the local settings file is machine-specific and git-ignored.
 
 Install the Windows engine if necessary:
 
@@ -172,3 +172,55 @@ The generator supports vertical/horizontal streaks, blobs, missing print, blur, 
 - **CNN/VGG16:** intentionally disabled and not installed. The complete core workflow uses OCR/classical CV. No Python downgrade or TensorFlow dependency is needed. There is no trained defect classifier or claimed model accuracy.
 
 The code is a working prototype for evaluation, not a calibrated production acceptance system.
+
+## Automatic text direction
+
+Reference and printed pages are now normalized to an upright orientation **before** feature
+preparation, alignment, OCR, and visual comparison. Supported corrections are 0, 90, 180,
+and 270 degrees clockwise after EXIF handling. Arabic reading order is retained; strings
+are never reversed to correct a rotated page.
+
+The detector first tries optional `osd.traineddata`. Weak or unavailable OSD falls back to
+four sparse-text OCR probes (`ara+eng` by default), requiring enough recognized characters,
+confidence, and a clear score margin. Printed pages with ambiguous text may use a unique,
+strong geometric match to a resolved reference. Scores are heuristic evidence, not calibrated
+probabilities. Grid-heavy, blank, mixed-orientation, mirrored, and very sparse pages may need
+manual review. Fine skew is left to existing registration, not this quarter-turn detector.
+
+Use **Text direction...** beside Settings to choose Auto or a clockwise correction for the
+reference and each printed page. Saving clears displayed results and requires another run.
+Overrides apply to the current selection/session. Disabling automatic detection requires
+explicit manual corrections (including 0 for already upright pages) for a completed inspection.
+An unresolved direction cannot produce PASS. Cancellation still finishes the current page.
+
+Settings in `settings.example.json` include `auto_orientation`, `orientation_timeout` (30 seconds
+shared across probes), `orientation_max_dimension` (2000 pixels), OSD confidence (15), minimum
+usable characters (12), recognition evidence confidence (55), and relative margin (0.20).
+Native image analysis/registration can finish its current operation after the budget expires;
+no further candidate is started, and incomplete candidate sets are not accepted. Tune thresholds
+against representative documents. Original source files and inspection pixels are not filtered
+or resized by quarter-turn correction; downsampling is restricted to direction analysis copies.
+
+The reference panel and **Upright Reference**, **Upright Printed** tabs show normalized images.
+**Original Printed** retains the loaded EXIF-corrected image. OCR boxes, masks, and defect overlays
+use the normalized reference coordinate frame. Schema 2 JSON reports include direction evidence,
+pixel-center rotation matrices and inverses, and the composed loaded-printed-to-reference transform.
+CSV reports include correction angles and direction statuses. Reference caching also tracks
+settings and manual corrections.
+
+For the backend, `InspectionEngine(settings, reference_orientation=90,
+printed_orientations={image_path: 180})` accepts optional overrides; omitted values use Auto.
+`OCREngine.extract()` remains a low-level recognizer of supplied pixels. Use the inspection
+engine, or `OrientationDetector(settings, ocr).detect(image)`, for automatic page normalization.
+
+Run a reproducible live check (the expected correction is manually established ground truth):
+
+```powershell
+python tools\verify_orientation.py standard_image1.jpeg --expected-correction 90 --all-pairs
+```
+
+It records baseline/final OCR, an additional sparse-layout diagnostic, model hashes, all four
+rotations, and all 16 reference/printed combinations under `outputs/orientation_validation`.
+Orientation correctness does not guarantee complete or accurate OCR: the supplied Arabic form
+still loses headings with the existing final `ocr_psm=3`, and sparse mode still makes character
+errors. See `ORIENTATION_VALIDATION.md` for measured results and limits.
