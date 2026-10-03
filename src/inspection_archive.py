@@ -141,7 +141,7 @@ def validate_metadata(data, names):
                     raise ValueError("Invalid evidence ID, type or state")
                 row_ids.add(row["id"])
                 box = row.get("bbox")
-                if box is not None and row.get("frame") != "normalized_reference":
+                if box is not None and row.get("frame") not in {"normalized_reference", "full_page"}:
                     raise ValueError("Unsupported marker coordinate frame")
                 if box is not None and (not isinstance(box, list) or len(box) != 4 or
                         not all(isinstance(n, (int, float)) and abs(n) <= 1000000 for n in box) or box[2] <= 0 or box[3] <= 0):

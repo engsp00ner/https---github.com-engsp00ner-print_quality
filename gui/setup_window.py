@@ -1,7 +1,8 @@
 from pathlib import Path
+from dataclasses import replace
 from PySide6.QtCore import Qt, QTimer, QThreadPool
 from PySide6.QtGui import QImageReader
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QSplitter, QFileDialog, QMessageBox, QDialog
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QSplitter, QFileDialog, QMessageBox, QDialog, QPushButton
 from config import ROOT
 from src.image_loader import discover_images
 from src.reporting import write_json
@@ -28,6 +29,13 @@ class MainWindow(DesktopWindow):
         self.header.addWidget(button("Open saved inspection", self.open_saved))
         self.settings_button = button("Settings", self.edit_settings)
         self.header.addWidget(self.settings_button)
+        self.ocr_toggle = QPushButton()
+        self.ocr_toggle.setCheckable(True)
+        self.ocr_toggle.setChecked(settings.ocr_enabled)
+        self.ocr_toggle.setText("OCR: ON" if settings.ocr_enabled else "OCR: OFF")
+        self.ocr_toggle.setToolTip("Optional text recognition. OFF runs visual inspection without OCR.")
+        self.ocr_toggle.toggled.connect(self.toggle_ocr)
+        self.header.addWidget(self.ocr_toggle)
         self.header.addWidget(button("PDF to PNG", self.pdf.show))
         self.body = QSplitter()
         reference_panel, reference = panel("①  Reference document", "Select the standard document to compare against.")
@@ -152,6 +160,7 @@ class MainWindow(DesktopWindow):
 
     def update_start(self):
         busy = self.controller.busy
+        self.ocr_toggle.setEnabled(not busy)
         self.start_button.setEnabled(self.valid_inputs() and not busy)
         self.reference_rotation_controls.setEnabled(not busy and bool(self.reference_path))
         self.sample_rotation_controls.setEnabled(not busy and self.samples.currentRow() >= 0)
@@ -167,8 +176,25 @@ class MainWindow(DesktopWindow):
                 settings = dialog.values()
                 write_json(ROOT / "settings.json", settings.to_dict())
                 self.settings = settings
+                self.ocr_toggle.blockSignals(True)
+                self.ocr_toggle.setChecked(settings.ocr_enabled)
+                self.ocr_toggle.setText("OCR: ON" if settings.ocr_enabled else "OCR: OFF")
+                self.ocr_toggle.blockSignals(False)
             except (ValueError, OSError) as exc:
                 self.show_error(str(exc))
+
+    def toggle_ocr(self, enabled):
+        settings = replace(self.settings, ocr_enabled=enabled)
+        try:
+            write_json(ROOT / "settings.json", settings.to_dict())
+        except OSError as exc:
+            self.ocr_toggle.blockSignals(True)
+            self.ocr_toggle.setChecked(self.settings.ocr_enabled)
+            self.ocr_toggle.blockSignals(False)
+            self.show_error(str(exc))
+            return
+        self.settings = settings
+        self.ocr_toggle.setText("OCR: ON" if enabled else "OCR: OFF")
 
     def edit_orientation(self):
         dialog = OrientationDialog(self.reference_path, self.printed_paths, self.reference_orientation, self.printed_orientations, self)

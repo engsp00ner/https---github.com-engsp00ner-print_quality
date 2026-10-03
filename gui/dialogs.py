@@ -63,7 +63,7 @@ class SettingsDialog(QDialog):
             spin.setValue(getattr(settings, name))
             layout.addRow(label, spin)
             self.fields[name] = spin
-        note = QLabel("Thresholds require calibration on real scans. Localized defects also fail inspection.\nDisabling OCR keeps visual analysis available, but marks content inspection incomplete.")
+        note = QLabel("Thresholds require calibration on real scans. Localized defects also fail inspection.\nOCR is optional. When disabled, PASS covers visual checks only; text recognition is skipped.")
         note.setWordWrap(True)
         layout.addRow(note)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)

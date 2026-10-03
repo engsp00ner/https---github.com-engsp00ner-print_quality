@@ -3,6 +3,68 @@ import cv2
 import numpy as np
 
 
+def geometric_orientation(reference_gray, printed, settings, reference_features=None):
+    """Resolve quarter turns from feature geometry, without text recognition."""
+    from .preprocessing import grayscale
+    from .orientation import ANGLES, rotation_matrix
+    _, rscale, rkp, rd = reference_features or prepare_features(reference_gray, settings)
+    _, pscale, pkp, pd = prepare_features(grayscale(printed), settings)
+    if rd is None or pd is None:
+        return None
+    pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(pd, rd, k=2)
+    good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < settings.match_ratio * p[1].distance]
+    unique = {}
+    for match in sorted(good, key=lambda m: m.distance):
+        unique.setdefault(match.trainIdx, match)
+    good = list(unique.values())
+    if len(good) < settings.min_matches:
+        return None
+    source = np.float32([pkp[m.queryIdx].pt for m in good]) / pscale
+    target = np.float32([rkp[m.trainIdx].pt for m in good]) / rscale
+    matrix, inliers = cv2.findHomography(source, target, cv2.RANSAC, settings.ransac_threshold / rscale)
+    count = int(inliers.sum()) if inliers is not None else 0
+    if matrix is None or count < settings.min_matches or count / len(good) < settings.min_inlier_ratio:
+        return None
+    candidates = []
+    for angle in ANGLES:
+        shape = printed.shape[:2][::-1] if angle in (90, 270) else printed.shape[:2]
+        candidate = matrix @ np.linalg.inv(rotation_matrix(printed.shape, angle))
+        if _plausible(candidate, shape, reference_gray.shape, settings):
+            candidates.append(angle)
+    if len(candidates) != 1:
+        return None
+    return dict(status="CONFIDENT", correction_clockwise=candidates[0], method="feature_registration",
+                matches=len(good), inliers=count, inlier_ratio=count / len(good), warnings=[], candidates=[])
+
+
+def full_page_frame(reference, printed, aligned, valid, info):
+    """Retain scan margins beyond the reference canvas; record the coordinate offset.
+
+    The reference's exterior is white page background. Coverage still measures
+    real overlap with the original reference, never this added background.
+    """
+    if "homography" not in info:
+        return reference, aligned, valid, (0, 0)
+    matrix = np.asarray(info["homography"])
+    ph, pw = printed.shape[:2]
+    rh, rw = reference.shape[:2]
+    corners = cv2.perspectiveTransform(np.float32([[[0, 0], [pw - 1, 0], [pw - 1, ph - 1], [0, ph - 1]]]), matrix)[0]
+    left, top = np.maximum(0, -np.floor(corners.min(axis=0))).astype(int)
+    right, bottom = np.maximum(0, np.ceil(corners.max(axis=0)) - [rw - 1, rh - 1]).astype(int)
+    offset = (int(left), int(top))
+    info["reference_offset"] = list(offset)
+    if not any((left, top, right, bottom)):
+        return reference, aligned, valid, offset
+    reference = cv2.copyMakeBorder(reference, int(top), int(bottom), int(left), int(right), cv2.BORDER_CONSTANT, value=(255, 255, 255))
+    translation = np.array([[1, 0, left], [0, 1, top], [0, 0, 1]])
+    matrix = translation @ matrix
+    size = reference.shape[1::-1]
+    aligned = cv2.warpPerspective(printed, matrix, size, borderValue=(255, 255, 255))
+    valid = cv2.warpPerspective(np.full(printed.shape[:2], 255, np.uint8), matrix, size, flags=cv2.INTER_NEAREST)
+    info.update(homography=matrix.tolist(), comparison_frame="full_page", exterior_reference="white_page_background")
+    return reference, aligned, valid, offset
+
+
 def prepare_features(gray, settings):
     scale = min(1.0, settings.alignment_max_dimension / max(gray.shape))
     small = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
@@ -79,7 +141,6 @@ def align(reference_gray, printed, settings, reference_features=None):
         return cv2.resize(printed, (rw, rh)), np.zeros((rh, rw), np.uint8), info
     aligned = cv2.warpPerspective(printed, matrix, (rw, rh), borderValue=(255, 255, 255))
     valid = cv2.warpPerspective(np.full(pg.shape, 255, np.uint8), matrix, (rw, rh), flags=cv2.INTER_NEAREST)
-    valid = cv2.erode(valid, np.ones((3, 3), np.uint8), borderType=cv2.BORDER_CONSTANT, borderValue=0)
     info.update(coverage=float(np.count_nonzero(valid) / valid.size), homography=matrix.tolist())
     if info["coverage"] < settings.min_coverage:
         info["warnings"].append("Insufficient page coverage after alignment; manual review required.")

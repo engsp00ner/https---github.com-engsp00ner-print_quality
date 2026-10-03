@@ -32,7 +32,7 @@ class EngineTests(unittest.TestCase):
             save_image(ref, reference)
             save_image(clean, reference)
             save_image(bad, apply_defects(reference, ["vertical", "blob", "missing"]))
-            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=True)
             with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()) as extract:
                 engine = InspectionEngine(settings, 0, {clean: 0, bad: 0})
                 folder = create_batch_dir(root)
@@ -44,7 +44,9 @@ class EngineTests(unittest.TestCase):
             self.assertTrue(bad_result.inspection_complete)
             self.assertGreater(bad_result.metrics["streak_count"], 0)
             overlay = load_image(bad_result.artifacts["defect_overlay"])
-            self.assertEqual(overlay.shape, reference.shape)
+            self.assertEqual(overlay.shape, load_image(bad_result.artifacts["normalized_reference"]).shape)
+            self.assertGreaterEqual(overlay.shape[0], reference.shape[0])
+            self.assertGreaterEqual(overlay.shape[1], reference.shape[1])
             self.assertTrue(np.any((overlay[:, :, 2] == 255) & (overlay[:, :, 1] == 0) & (overlay[:, :, 0] == 0)))
             report = json.loads((Path(bad_result.output_dir) / "report.json").read_text(encoding="utf-8"))
             self.assertEqual(report["status"], "DEFECTIVE")
@@ -61,7 +63,7 @@ class EngineTests(unittest.TestCase):
             ref, sample = root / "reference.png", root / "sample.png"
             save_image(ref, reference)
             save_image(sample, printed)
-            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=True)
             engine = InspectionEngine(settings, 0, {sample: 0})
             with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("Order 12584"), self.ocr("Order 12534")]):
                 result = engine.inspect(ref, sample)
@@ -86,7 +88,7 @@ class EngineTests(unittest.TestCase):
             extra = reference.copy()
             extra[900:940, 900:960] = 0
             save_image(extra_only, extra)
-            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=True)
             with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("A 1"), self.ocr("A 2")]):
                 text = InspectionEngine(settings, 0, {text_only: 0}).inspect(ref, text_only)
             self.assertGreater(text.metrics["text_error_count"], 0)
@@ -108,7 +110,7 @@ class EngineTests(unittest.TestCase):
             ref, path = root / "ref.png", root / "faded.png"
             save_image(ref, reference)
             save_image(path, faded)
-            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=True)
             with self.assertLogs("src.inspection_engine", "INFO") as logs, \
                  patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr("Order 12584", 20), self.ocr("Order 12534", 20)]):
                 result = InspectionEngine(settings, 0, {path: 0}).inspect(ref, path)
@@ -128,7 +130,7 @@ class EngineTests(unittest.TestCase):
             ref, path = root / "ref.png", root / "sample.png"
             save_image(ref, reference)
             save_image(path, sample)
-            settings = replace(Settings(), output_dir=str(root), ocr_enabled=False)
+            settings = replace(Settings(), output_dir=str(root), ocr_enabled=True)
             with patch("src.ocr_engine.OCREngine.extract", side_effect=[self.ocr(), OCRResult(status="FAILED", error="test OCR failure")]):
                 failed_ocr = InspectionEngine(settings, 0, {path: 0}).inspect(ref, path)
             self.assertFalse(failed_ocr.inspection_complete)
@@ -152,22 +154,22 @@ class EngineTests(unittest.TestCase):
             failed_alignment = {"status": "FAILED", "warnings": ["test alignment failure"], "coverage": 0.0}
             with patch("src.ocr_engine.OCREngine.extract", return_value=self.ocr()), \
                  patch("src.inspection_engine.align", return_value=(reference, np.zeros(reference.shape[:2], np.uint8), failed_alignment)):
-                result = InspectionEngine(replace(Settings(), output_dir=str(root), ocr_enabled=False), 0, {path: 0}).inspect(ref, path)
+                result = InspectionEngine(replace(Settings(), output_dir=str(root), ocr_enabled=True), 0, {path: 0}).inspect(ref, path)
             self.assertFalse(result.inspection_complete)
             self.assertEqual(result.checks["ink"]["status"], "SKIPPED")
             self.assertEqual(result.metrics["extra_ink_count"], 0)
             self.assertEqual(result.metrics["missing_ink_count"], 0)
 
-    def test_missing_ocr_and_bad_input_cannot_pass(self):
+    def test_disabled_ocr_can_pass_visual_checks_but_bad_input_cannot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             image = root / "blank.png"
             save_image(image, np.full((80, 80, 3), 255, np.uint8))
             engine = InspectionEngine(replace(Settings(), ocr_enabled=False, output_dir=str(root)))
             result = engine.inspect(image, image)
-            self.assertEqual(result.status, "DEFECTIVE")
-            self.assertFalse(result.inspection_complete)
-            self.assertTrue(any("OCR" in reason for reason in result.decision_reasons))
+            self.assertEqual(result.status, "PASS")
+            self.assertTrue(result.inspection_complete)
+            self.assertEqual(result.checks["text_comparison"]["status"], "SKIPPED")
             result = engine.inspect(image, root / "missing.png")
             self.assertEqual(result.status, "DEFECTIVE")
             self.assertFalse(result.inspection_complete)

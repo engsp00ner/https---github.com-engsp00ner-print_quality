@@ -23,6 +23,7 @@ def result_state(result):
 def evidence_rows(result):
     """Stable per-sample IDs. Auxiliary evidence is never promoted to defects."""
     rows = []
+    frame = result.get("orientation", {}).get("comparison_frame", "normalized_reference")
     if result.get('stale'):
         return rows
     for i, defect in enumerate(result.get("defects", []), 1):
@@ -32,11 +33,11 @@ def evidence_rows(result):
         box = [defect[k] for k in ("x", "y", "width", "height")]
         rows.append({"id": str(i), "type": ", ".join(details.get("labels", [defect["type"]])),
                      "state": "Review required" if review else "Confirmed", "bbox": box,
-                     "frame": "normalized_reference", "details": details})
+                     "frame": frame, "details": details})
         for j, evidence in enumerate(details.get("evidence", []), 1):
             if evidence.get("classification") == "text_change_visual_evidence":
                 rows.append({"id": f"{i}.{j}", "type": evidence["type"], "state": "Review required",
-                             "bbox": evidence.get("bbox"), "frame": "normalized_reference",
+                             "bbox": evidence.get("bbox"), "frame": frame,
                              "details": {**evidence.get("details", {}), "description": "Visual evidence overlapping text change"}})
     # Non-localized text differences must remain visible when registration was unreliable.
     if not any(d["type"] == "TEXT_ERROR" for d in result.get("defects", [])):

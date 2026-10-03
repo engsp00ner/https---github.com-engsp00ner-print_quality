@@ -91,7 +91,7 @@ class OrientationTests(unittest.TestCase):
         d.ocr.extract.assert_not_called()
 
     def test_registration_fallback_requires_unique_geometric_match(self):
-        settings = replace(Settings(), ocr_enabled=False)
+        settings = replace(Settings(), ocr_enabled=True)
         engine = InspectionEngine(settings, 0)
         pixels = np.zeros((40, 60, 3), np.uint8)
         pixels[10:30, 15:45] = 255
@@ -105,11 +105,13 @@ class OrientationTests(unittest.TestCase):
         engine.orientation_detector.detect = Mock(side_effect=unresolved)
         bad = (255 - pixels, valid, {"status": "SUCCESS", "coverage": 1.0})
         good = (pixels, valid, {"status": "SUCCESS", "coverage": 1.0})
+        printed = pixels.copy()
+        printed[0, 0] = 255  # Exercise fallback rather than the identical-page fast path.
         with patch("src.inspection_engine.align", side_effect=[bad, good, bad, bad]):
-            _, info = engine._printed_orientation(pixels, Path("page.png"))
+            _, info = engine._printed_orientation(printed, Path("page.png"))
         self.assertEqual((info["status"], info["correction_clockwise"]), ("CONFIDENT", 90))
         with patch("src.inspection_engine.align", side_effect=[good] * 4):
-            _, info = engine._printed_orientation(pixels, Path("page.png"))
+            _, info = engine._printed_orientation(printed, Path("page.png"))
         self.assertEqual(info["status"], "AMBIGUOUS")
 
     def test_exif_is_applied_once_then_detected(self):
@@ -127,7 +129,7 @@ class OrientationTests(unittest.TestCase):
 
     def test_runtime_restored_on_osd_and_ocr_failure(self):
         with patch("src.ocr_engine.validate_tesseract", return_value={"executable": "fake", "languages": ["osd"]}):
-            engine = OrientationOCR(replace(Settings(), tessdata_dir="temporary models"))
+            engine = OrientationOCR(replace(Settings(), tessdata_dir="temporary models", ocr_enabled=True))
         before = os.environ.get("TESSDATA_PREFIX")
         import pytesseract
         command = pytesseract.pytesseract.tesseract_cmd
@@ -161,17 +163,17 @@ class OrientationTests(unittest.TestCase):
                         np.testing.assert_array_equal(load_image(result.artifacts["normalized_printed"]), upright)
                         np.testing.assert_allclose(result.alignment["loaded_printed_to_reference"],
                                                    rotation_matrix(rotate_page(upright, angle).shape, (-angle) % 360))
-                self.assertEqual(extract.call_count, 20)
+                self.assertEqual(extract.call_count, 0)
                 engine.reference_orientation_override = 180
                 engine.prepare_reference(reference)
-                self.assertEqual(extract.call_count, 21)
+                self.assertEqual(extract.call_count, 0)
 
     def test_ambiguous_orientation_cannot_pass_even_if_ocr_succeeds(self):
         with tempfile.TemporaryDirectory() as folder:
             p = Path(folder) / "blank.png"
             save_image(p, np.full((80, 80, 3), 255, np.uint8))
             with patch("src.ocr_engine.OCREngine.extract", return_value=recognized()):
-                r = InspectionEngine(replace(Settings(), ocr_enabled=False, output_dir=folder)).inspect(p, p)
+                r = InspectionEngine(replace(Settings(), ocr_enabled=True, tesseract_path="missing-runtime", output_dir=folder)).inspect(p, p)
                 self.assertFalse(r.inspection_complete)
                 self.assertEqual(r.status, "DEFECTIVE")
                 self.assertTrue(any("orientation unresolved" in s for s in r.decision_reasons))

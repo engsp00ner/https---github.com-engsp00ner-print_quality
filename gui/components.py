@@ -305,7 +305,7 @@ class InspectionViewer(ImageViewer):
             return
         bounds = self.view.sceneRect()
         for row in rows:
-            if not row.get("bbox") or row.get("frame") != "normalized_reference":
+            if not row.get("bbox") or row.get("frame") not in {"normalized_reference", "full_page"}:
                 continue
             marker = Marker(row, self.preview_scale, self.marker_clicked.emit)
             # Clip to actual display bounds; never invent a location for unlocalized findings.

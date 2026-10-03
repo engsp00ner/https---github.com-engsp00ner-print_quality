@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 from PySide6.QtCore import Qt, QTimer, QThreadPool
 from PySide6.QtWidgets import QApplication
 from PySide6.QtTest import QTest
@@ -68,6 +68,28 @@ class GUITests(unittest.TestCase):
             self.assertIsNone(window.reference_path)
             window.close()
 
+    def test_ocr_toggle_persists_and_is_locked_while_running(self):
+        window = MainWindow(Settings(ocr_enabled=False))
+        with patch("gui.setup_window.write_json") as write:
+            window.ocr_toggle.click()
+            self.assertTrue(window.settings.ocr_enabled)
+            self.assertEqual(window.ocr_toggle.text(), "OCR: ON")
+            self.assertTrue(write.call_args.args[1]["ocr_enabled"])
+            window.ocr_toggle.click()
+            self.assertFalse(window.settings.ocr_enabled)
+            self.assertFalse(write.call_args.args[1]["ocr_enabled"])
+        with patch.object(type(window.controller), "busy", new_callable=PropertyMock, return_value=True):
+            window.update_start()
+            self.assertFalse(window.ocr_toggle.isEnabled())
+        with patch("gui.setup_window.write_json", side_effect=OSError("read only")), \
+             patch.object(window, "show_error") as error:
+            window.update_start()
+            window.ocr_toggle.click()
+            self.assertFalse(window.settings.ocr_enabled)
+            self.assertFalse(window.ocr_toggle.isChecked())
+            error.assert_called_once()
+        window.close()
+
     def test_threaded_real_engine_stages_no_concurrent_runs_and_archive(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -100,6 +122,7 @@ class GUITests(unittest.TestCase):
             self.assertTrue(ticks)
             result = window.controller.session
             self.assertEqual(result.samples[0]["state"], "Passed")
+            self.assertEqual(result.samples[0]["result"]["coordinate_frames"]["markers"], "full_page")
             self.assertTrue(Path(result.archive_path).is_file())
             self.assertTrue((Path(result.folder) / "batch_report.csv").is_file())
             self.assertTrue(any(e["stage"] == "ink" and e["status"] == "RUNNING" for e in stages))
@@ -111,6 +134,9 @@ class GUITests(unittest.TestCase):
     def test_markers_table_frames_and_scan_geometry(self):
         with tempfile.TemporaryDirectory() as directory:
             session = synthetic_session(Path(directory))
+            session.samples[0]["result"]["orientation"]["comparison_frame"] = "full_page"
+            for row in session.samples[0]["result"]["evidence_rows"]:
+                row["frame"] = "full_page"
             controller = InspectionController()
             window = ResultsWindow(session, controller)
             window.resize(1366, 768)
@@ -149,8 +175,9 @@ class GUITests(unittest.TestCase):
             controller = InspectionController()
             # The controller accepts repeated paths here only to exercise queued cancellation.
             controller.started_sample.connect(lambda _: controller.cancel())
-            controller.start(path, [path, path], replace(Settings(), output_dir=str(root), ocr_enabled=False), 0, {str(path): 0})
-            self.wait(lambda: not controller.busy and not controller.jobs)
+            with patch("src.ocr_engine.OCREngine.extract", return_value=OCRResult(status="FAILED", error="test failure")):
+                controller.start(path, [path, path], replace(Settings(), output_dir=str(root), ocr_enabled=True), 0, {str(path): 0})
+                self.wait(lambda: not controller.busy and not controller.jobs)
             self.assertEqual(controller.session.status, "Cancelled")
             self.assertEqual(controller.session.samples[0]["state"], "Review required")
             self.assertEqual(controller.session.samples[1]["state"], "Cancelled")

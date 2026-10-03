@@ -1,4 +1,5 @@
 from dataclasses import asdict
+from copy import deepcopy
 import logging
 import hashlib
 from pathlib import Path
@@ -7,7 +8,7 @@ from collections import Counter
 import cv2
 import numpy as np
 from config import Settings
-from .alignment import align, prepare_features
+from .alignment import align, prepare_features, geometric_orientation, full_page_frame
 from .blob_detection import detect_blobs
 from .defect_merging import merge_defects
 from .image_loader import load_image, save_image
@@ -92,7 +93,7 @@ class InspectionEngine:
         path = Path(path).resolve()
         stat = path.stat()
         signature = (hashlib.sha256(path.read_bytes()).hexdigest(), self.settings,
-                     self.reference_orientation_override, fingerprint(self.settings))
+                     self.reference_orientation_override, fingerprint(self.settings) if self.settings.ocr_enabled else None)
         if signature == self.reference_signature:
             self.reference_path = path
             return
@@ -101,12 +102,18 @@ class InspectionEngine:
             self.ocr_engine = OCREngine(self.settings)
             self.orientation_detector = OrientationDetector(self.settings, OrientationOCR(self.settings))
         self.reference_original = load_image(path, self.settings)
-        self.reference, self.reference_orientation = self.orientation_detector.detect(
-            self.reference_original, self.reference_orientation_override)
+        if not self.settings.ocr_enabled and self.reference_orientation_override is None:
+            self.reference, self.reference_orientation = normalize(self.reference_original, dict(
+                status="MANUAL", method="reference_frame", correction_clockwise=0,
+                warnings=[], elapsed_seconds=0.0))
+        else:
+            self.reference, self.reference_orientation = self.orientation_detector.detect(
+                self.reference_original, self.reference_orientation_override)
         self.reference_gray = for_defects(self.reference)
         self.reference_ink = ink_mask(self.reference_gray, self.settings)
         self.reference_features = prepare_features(self.reference_gray, self.settings)
-        self.reference_ocr = self.ocr_engine.extract(self.reference)
+        self.reference_ocr = (self.ocr_engine.extract(self.reference) if self.settings.ocr_enabled
+                              else OCRResult(status="SKIPPED", error="OCR disabled; visual inspection only."))
         self.reference_path = path
         self.reference_signature = signature
         self.reference_preparation_seconds = time.perf_counter() - started
@@ -114,12 +121,24 @@ class InspectionEngine:
         log.info("Prepared reference %s (OCR: %s)", path.name, self.reference_ocr.status)
 
     def _printed_orientation(self, printed, path):
+        override = self.printed_orientation_overrides.get(str(path))
+        if override is None and self.settings.auto_orientation and self.reference_orientation["status"] in RESOLVED:
+            started = time.monotonic()
+            geometry = geometric_orientation(self.reference_gray, printed, self.settings, self.reference_features)
+            if geometry is not None:
+                geometry["elapsed_seconds"] = time.monotonic() - started
+                return normalize(printed, geometry)
+            if printed.shape[:2] == self.reference_gray.shape and np.array_equal(for_defects(printed), self.reference_gray):
+                return normalize(printed, dict(status="CONFIDENT", method="identical_reference",
+                    correction_clockwise=0, warnings=[], elapsed_seconds=time.monotonic() - started))
+        if override is None and not self.settings.auto_orientation and not self.settings.ocr_enabled:
+            override = 0  # Explicitly use the orientation supplied in the UI.
         normalized, info = self.orientation_detector.detect(
-            printed, self.printed_orientation_overrides.get(str(path)))
+            printed, override)
         # Registration is supplementary evidence only. Never choose by OCR edits
         # or number of defects. Strong correlation and a clear margin are required.
         if (info["status"] in RESOLVED or self.reference_orientation["status"] not in RESOLVED
-                or not self.settings.auto_orientation):
+                or not self.settings.auto_orientation or not self.settings.ocr_enabled):
             return normalized, info
         started = time.monotonic()
         candidates = []
@@ -183,23 +202,30 @@ class InspectionEngine:
                 result.alignment = {"status": "FAILED", "warnings": ["Alignment check failed."], "coverage": 0.0}
             else:
                 aligned, valid, result.alignment = alignment_stage
+            comparison_reference, aligned, valid, offset = full_page_frame(
+                self.reference, normalized, aligned, valid, result.alignment)
+            reference_gray = for_defects(comparison_reference)
+            reference_ink = (self.reference_ink if comparison_reference.shape == self.reference.shape
+                             else ink_mask(reference_gray, self.settings))
+            result.orientation["comparison_frame"] = "full_page"
+            result.orientation["reference_offset"] = list(offset)
             if "homography" in result.alignment:
                 mapping = np.asarray(result.alignment["homography"]) @ np.asarray(printed_orientation["forward_transform"])
                 result.alignment.update(loaded_printed_to_reference=mapping.tolist(),
                                         reference_to_loaded_printed=np.linalg.inv(mapping).tolist(),
                                         homography_source_frame="normalized_printed",
-                                        destination_frame="normalized_reference")
+                                        destination_frame="full_page")
             result.warnings.extend(result.alignment["warnings"])
             registered = result.alignment["status"] != "FAILED"
             coverage_ok = result.alignment.get("coverage", 0) >= self.settings.min_coverage
             arrays = {"original_printed": printed, "normalized_printed": normalized,
-                      "normalized_reference": self.reference, "aligned_printed": aligned}
+                      "normalized_reference": comparison_reference, "aligned_printed": aligned}
             defects, streaks, blobs = [], [], []
-            difference = extra = missing = np.zeros(self.reference_gray.shape, np.uint8)
-            if registered and orientation_ok and coverage_ok:
+            difference = extra = missing = np.zeros(reference_gray.shape, np.uint8)
+            if registered and orientation_ok:
                 gray = for_defects(aligned)
                 def run_ssim():
-                    response = compare_ssim(self.reference_gray, gray, valid, self.settings)
+                    response = compare_ssim(reference_gray, gray, valid, self.settings)
                     return response, len(response[2])
                 ssim_stage = self._stage(result, "ssim", run_ssim)
                 if ssim_stage is not None:
@@ -207,7 +233,7 @@ class InspectionEngine:
                     result.metrics["ssim"] = ssim
                     defects.extend(visual)
                 def run_ink():
-                    response = compare_ink(self.reference_gray, gray, valid, self.settings, self.reference_ink)
+                    response = compare_ink(reference_gray, gray, valid, self.settings, reference_ink)
                     return response, len(response[3])
                 ink_stage = self._stage(result, "ink", run_ink)
                 if ink_stage is not None:
@@ -240,17 +266,26 @@ class InspectionEngine:
                 result.decision_reasons.append(reason)
             arrays.update(difference_mask=difference, extra_ink_mask=extra, missing_ink_mask=missing,
                           detected_lines=annotate(aligned, streaks), valid_comparison_mask=valid)
-            reference_ocr_status = "COMPLETED" if self.reference_ocr.status == "SUCCESS" else "FAILED"
-            result.checks["reference_ocr"] = {"status": reference_ocr_status, "required": True,
+            reference_ocr_status = ("SKIPPED" if not self.settings.ocr_enabled else
+                                    "COMPLETED" if self.reference_ocr.status == "SUCCESS" else "FAILED")
+            result.checks["reference_ocr"] = {"status": reference_ocr_status, "required": self.settings.ocr_enabled,
                                                "result_count": len(self.reference_ocr.words),
                                                "elapsed_seconds": self.reference_preparation_seconds,
                                                **({"reason": self.reference_ocr.error} if self.reference_ocr.error else {})}
             log.info("Check reference_ocr %s (%d words)", reference_ocr_status.lower(), len(self.reference_ocr.words))
-            printed_ocr = self._stage(result, "printed_ocr", lambda: (
-                self.ocr_engine.extract(aligned), 0))
+            printed_ocr = self._stage(result, "printed_ocr", (lambda: (
+                self.ocr_engine.extract(aligned), 0)) if self.settings.ocr_enabled else None,
+                reason="OCR disabled; visual inspection only.", required=self.settings.ocr_enabled)
             if printed_ocr is None:
-                printed_ocr = OCRResult(status="FAILED", error=result.checks["printed_ocr"].get("reason", "OCR check failed"))
-            result.ocr = {"reference": asdict(self.reference_ocr), "printed": asdict(printed_ocr)}
+                printed_ocr = OCRResult(status="FAILED" if self.settings.ocr_enabled else "SKIPPED",
+                                       error=result.checks["printed_ocr"].get("reason", "OCR check failed"))
+            reference_ocr = deepcopy(self.reference_ocr)
+            for word in reference_ocr.words:
+                x, y, w, h = word.bbox
+                word.bbox = (x + offset[0], y + offset[1], w, h)
+                word.polygon = [[x + offset[0], y + offset[1]] for x, y in word.polygon]
+            result.ocr = {"reference": asdict(reference_ocr), "printed": asdict(printed_ocr)}
+            result.metrics["inspection_scope"] = "visual_and_ocr" if self.settings.ocr_enabled else "visual_only"
             result.metrics.update(ocr_reference_confidence=self.reference_ocr.confidence,
                                   ocr_printed_confidence=printed_ocr.confidence,
                                   reference_preparation_seconds=self.reference_preparation_seconds)
@@ -258,7 +293,7 @@ class InspectionEngine:
             text_defects = []
             if ocr_ok:
                 def run_text_comparison():
-                    response = compare_text(self.reference_ocr, printed_ocr, self.settings)
+                    response = compare_text(reference_ocr, printed_ocr, self.settings)
                     return response, len(response[1])
                 text_stage = self._stage(result, "text_comparison", run_text_comparison)
                 if text_stage is not None:
@@ -284,15 +319,18 @@ class InspectionEngine:
                     result.metrics["text_mismatch_reliable"] = False
                 else:
                     result.metrics["text_mismatch_reliable"] = True
-            else:
+            elif self.settings.ocr_enabled:
                 self._stage(result, "text_comparison", reason="OCR unavailable or failed.")
                 result.warnings.extend(dict.fromkeys(o.error for o in (self.reference_ocr, printed_ocr) if o.error))
                 result.decision_reasons.append("OCR unavailable or failed; content inspection incomplete")
+            else:
+                self._stage(result, "text_comparison", reason="OCR disabled; visual inspection only.", required=False)
             if registered and not coverage_ok:
                 result.decision_reasons.append("Page coverage is insufficient")
             required_ok = all(check["status"] == "COMPLETED" for check in result.checks.values()
                               if check.get("required"))
-            result.inspection_complete = bool(registered and coverage_ok and ocr_ok and orientation_ok and required_ok)
+            result.inspection_complete = bool(registered and coverage_ok and (ocr_ok or not self.settings.ocr_enabled)
+                                              and orientation_ok and required_ok)
             result.defects = merge_defects(defects, self.settings)
             raw_counts = Counter(defect.type for defect in defects)
             merged_counts = Counter(label for defect in result.defects for label in defect.details.get("labels", [defect.type]))

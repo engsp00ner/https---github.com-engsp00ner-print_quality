@@ -11,7 +11,10 @@ def compare_ink(reference, printed, valid, settings, reference_ink=None):
     kernel = np.ones((radius * 2 + 1, radius * 2 + 1), np.uint8)
     nearby_ref, nearby_prn = cv2.dilate(ref, kernel), cv2.dilate(prn, kernel)
     signed = reference.astype(np.int16) - printed.astype(np.int16)
-    extra = ((prn > 0) & (nearby_ref == 0) & (signed >= settings.intensity_difference))
+    # Pale smudges on blank paper can sit above the binary ink threshold.
+    # Keep their signed intensity evidence, while retaining the same spatial
+    # tolerance around legitimate strokes and the noise-area filter below.
+    extra = (nearby_ref == 0) & (signed >= settings.intensity_difference)
     missing = ((ref > 0) & (nearby_prn == 0) & (-signed >= settings.intensity_difference))
     # Intensity evidence also catches fading/bleeding inside existing ink strokes.
     # Compare the darkest nearby sample for intensity evidence. Resampling can

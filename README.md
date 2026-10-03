@@ -2,6 +2,28 @@
 
 A Windows/PySide6 desktop prototype that compares a batch of printed pages with one correct reference. It combines alignment, Arabic/English OCR, strict text comparison, SSIM, extra/missing ink analysis, streaks and blob detection. The default result is the **printed page, aligned to the reference, with red defect rectangles**. Processing runs in a worker thread; results appear as each page finishes.
 
+## Optional OCR and full-page visual inspection
+
+The setup header has an **OCR: OFF / OCR: ON** toggle. It defaults to OFF and saves
+its selection in `settings.json`. OFF runs alignment, SSIM, extra/missing ink,
+streaks, and blobs without starting or validating either OCR runtime. PASS then
+means the visual checks passed; results and CSV identify the `visual_only` scope.
+ON additionally runs text recognition and comparison; failed or uncertain selected
+OCR checks still require review. The toggle is locked during an inspection.
+
+Printed-page rotation is matched to the reference using feature geometry first.
+With OCR off, the supplied reference orientation defines the comparison frame;
+manual rotation controls remain available. With automatic orientation disabled in
+visual-only mode, the supplied orientations are used unchanged.
+
+Registration preserves the full scan, including margins that extend beyond the
+reference. These exterior margins use white reference background, appropriate for
+full-page documents on white paper. Cropped references or colored paper need manual
+review. Faint marks on blank areas use the intensity-difference threshold as well
+as the minimum connected area; they need not cross the binary ink threshold.
+Low reference coverage still requires review, but visible regions are inspected.
+Unregistered pages never receive invented pixel comparisons.
+
 ## Launch on this machine
 
 ```powershell
@@ -48,7 +70,7 @@ Install the Windows engine if necessary:
 winget install --id UB-Mannheim.TesseractOCR --exact --source winget --accept-package-agreements --accept-source-agreements
 ```
 
-The Windows installer is linked from [Tesseract's installation guide](https://tesseract-ocr.github.io/tessdoc/Installation.html). Arabic requires `ara.traineddata`; English requires `eng.traineddata`. The application validates **both** before attempting OCR. Missing files produce explicit warnings and prevent a PASS result. The default installer may contain English without Arabic.
+The Windows installer is linked from [Tesseract's installation guide](https://tesseract-ocr.github.io/tessdoc/Installation.html). Arabic requires `ara.traineddata`; English requires `eng.traineddata`. The application validates **both** before attempting OCR. When OCR is enabled, missing files produce explicit warnings; visual-only mode needs no OCR models. The default installer may contain English without Arabic.
 
 To provision local language data without changing Program Files:
 
@@ -96,7 +118,7 @@ Supported files: JPG/JPEG, PNG, BMP, TIF/TIFF, including Unicode paths. Transpar
 - **Streaks/blobs:** directional morphology operates on extra/missing differences, preserving legitimate reference lines. Black/white compact components are labeled as blob candidates. These geometric categories are heuristics and can overlap other causes.
 - **Merging:** IoU/containment merges supporting detections into local boxes, retaining algorithm labels and evidence. Specific text/streak boxes take priority over broad visual regions. Per-algorithm counts may exceed the final merged box count.
 
-Every page has PASS or DEFECTIVE. PASS requires completed alignment, adequate coverage, available OCR, no localized defects and passing aggregate thresholds. **DEFECTIVE · review** means checks were incomplete; it does not assert a confirmed physical defect. Failures, unavailable OCR and insufficient coverage are never silently counted as clean. A low-confidence OCR page is also flagged for review. A page can fail an aggregate metric without a localized box; the details panel explains that reason.
+Every page has PASS or DEFECTIVE. PASS requires completed alignment, adequate coverage, no localized defects and passing aggregate thresholds; OCR is additionally required only when enabled. **DEFECTIVE · review** means checks were incomplete; it does not assert a confirmed physical defect. Failed selected checks and insufficient coverage are never silently counted as clean. A low-confidence OCR page is also flagged for review. A page can fail an aggregate metric without a localized box; the details panel explains that reason.
 
 Confidence on OCR defects is OCR recognition confidence. Classical detectors use rule-based evidence, not calibrated defect probabilities. OCR can misread an identical wrong character on both pages; a successful OCR call is not a guarantee of content accuracy. Empty OCR results on image-only/blank documents are valid. The classical visual checks remain active.
 
@@ -175,12 +197,14 @@ The code is a working prototype for evaluation, not a calibrated production acce
 
 ## Automatic text direction
 
-Reference and printed pages are now normalized to an upright orientation **before** feature
-preparation, alignment, OCR, and visual comparison. Supported corrections are 0, 90, 180,
+Pages are normalized to a shared orientation before alignment and visual comparison.
+With OCR off, the reference stays in its supplied orientation; with OCR on, reference
+text orientation is detected before feature preparation. Supported corrections are 0, 90, 180,
 and 270 degrees clockwise after EXIF handling. Arabic reading order is retained; strings
 are never reversed to correct a rotated page.
 
-The detector first tries optional `osd.traineddata`. Weak or unavailable OSD falls back to
+Printed pages first use feature matching against the reference. When OCR is enabled,
+the text direction detector tries optional `osd.traineddata`. Weak or unavailable OSD falls back to
 four sparse-text OCR probes (`ara+eng` by default), requiring enough recognized characters,
 confidence, and a clear score margin. Printed pages with ambiguous text may use a unique,
 strong geometric match to a resolved reference. Scores are heuristic evidence, not calibrated
@@ -189,8 +213,8 @@ manual review. Fine skew is left to existing registration, not this quarter-turn
 
 Use **Text direction...** beside Settings to choose Auto or a clockwise correction for the
 reference and each printed page. Saving clears displayed results and requires another run.
-Overrides apply to the current selection/session. Disabling automatic detection requires
-explicit manual corrections (including 0 for already upright pages) for a completed inspection.
+Overrides apply to the current selection/session. With OCR enabled, disabling automatic detection requires explicit manual corrections.
+With OCR disabled, disabling automatic detection keeps the supplied orientations.
 An unresolved direction cannot produce PASS. Cancellation still finishes the current page.
 
 Settings in `settings.example.json` include `auto_orientation`, `orientation_timeout` (30 seconds
@@ -203,7 +227,9 @@ or resized by quarter-turn correction; downsampling is restricted to direction a
 
 The reference panel and **Upright Reference**, **Upright Printed** tabs show normalized images.
 **Original Printed** retains the loaded EXIF-corrected image. OCR boxes, masks, and defect overlays
-use the normalized reference coordinate frame. Schema 2 JSON reports include direction evidence,
+use the full comparison canvas coordinate frame. Its `reference_offset` records
+the reference padding; transforms include this offset. Old saved inspections retain
+their original normalized-reference frame. Schema 2 JSON reports include direction evidence,
 pixel-center rotation matrices and inverses, and the composed loaded-printed-to-reference transform.
 CSV reports include correction angles and direction statuses. Reference caching also tracks
 settings and manual corrections.

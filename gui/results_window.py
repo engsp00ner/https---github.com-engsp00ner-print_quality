@@ -255,6 +255,8 @@ class ResultsWindow(DesktopWindow):
                 self.table.setItem(row_index, col, item)
         clean = self.current["state"] == "Passed" and not result["defects"]
         self.findings_label.setText("✓ No defects detected" if clean else f"{self.current['state']} · Engine decision: {result['status']} · {len(result['defects'])} defects")
+        if result.get("metrics", {}).get("inspection_scope") == "visual_only":
+            self.findings_label.setText(self.findings_label.text() + " · Visual only (OCR off)")
         self.findings_label.setToolTip("\n".join(result["decision_reasons"]))
         self.checks.setPlainText("\n\n".join(f"{name.replace('_', ' ').capitalize()}: {check.get('status', 'Unavailable')}\n{check.get('reason', '')}" for name, check in result["checks"].items()) + "\n\nDecision reasons\n" + "\n".join(result["decision_reasons"]) + "\n\nWarnings\n" + "\n".join(result["warnings"]))
         self.metrics.setPlainText(json.dumps({"metrics": result["metrics"], "duration_seconds": result["processing_time_seconds"], "alignment": result["alignment"], "orientation": result["orientation"]}, ensure_ascii=False, indent=2))
@@ -288,7 +290,8 @@ class ResultsWindow(DesktopWindow):
         self.viewer.load(path)
         localized = key in CANONICAL and bool(result.get("artifacts", {}).get(key))
         self.viewer.set_markers(self.rows if localized else [], self.markers_checkbox.isChecked())
-        self.frame_note.setText("Markers: normalized reference coordinates" if localized else "Original / normalized sample view · markers hidden outside the comparison frame")
+        frame = result.get("orientation", {}).get("comparison_frame", "normalized_reference").replace("_", " ")
+        self.frame_note.setText(f"Markers: {frame} coordinates" if localized else "Original / normalized sample view · markers hidden outside the comparison frame")
 
     def table_selected(self):
         row_index = self.table.currentRow()

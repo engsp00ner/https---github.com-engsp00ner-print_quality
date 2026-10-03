@@ -32,6 +32,20 @@ def synthetic_session(root):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_full_page_frame_roundtrip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            session = synthetic_session(root)
+            result = session.samples[0]["result"]
+            result["orientation"].update(comparison_frame="full_page", reference_offset=[20, 30])
+            result["evidence_rows"] = evidence_rows(result)
+            path = root / "full_page.pinspect"
+            save_inspection(path, session)
+            loaded = load_inspection(path)
+            self.assertEqual(loaded.samples[0]["result"]["evidence_rows"][0]["frame"], "full_page")
+            self.assertEqual(loaded.samples[0]["result"]["orientation"]["reference_offset"], [20, 30])
+            loaded.storage.cleanup()
+
     def test_portable_after_source_removed_and_analysis_guarded(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

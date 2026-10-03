@@ -100,7 +100,7 @@ class PaddleRotationTests(unittest.TestCase):
             second.update(id='2', filename='second.png', path=str(root / 'second.png'))
             save_image(second['path'], load_image(session.reference))
             session.samples.append(second)
-            session.settings = replace(Settings(), output_dir=folder, ocr_enabled=False).to_dict()
+            session.settings = replace(Settings(), output_dir=folder, ocr_enabled=True).to_dict()
             session.reference_rotation = dict(status='MANUAL', correction_clockwise=0, method='manual')
             for sample in session.samples:
                 sample['rotation'] = dict(status='CONFIDENT', correction_clockwise=180, method='osd')

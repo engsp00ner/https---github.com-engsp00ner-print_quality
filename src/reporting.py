@@ -33,7 +33,7 @@ CSV_FIELDS = ["filename", "printed_path", "status", "inspection_complete", "alig
               "processing_time_seconds", "output_dir", "warnings", "decision_reasons",
               "reference_orientation_status", "reference_correction_clockwise",
               "printed_orientation_status", "printed_correction_clockwise", "check_statuses",
-              "raw_defect_counts", "displayed_defect_counts", "text_mismatch_reliable"]
+              "raw_defect_counts", "displayed_defect_counts", "text_mismatch_reliable", "inspection_scope"]
 
 
 def _csv_safe(value):

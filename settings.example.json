@@ -2,7 +2,7 @@
   "tesseract_path": "C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
   "tessdata_dir": "",
   "ocr_languages": "ara+eng",
-  "ocr_enabled": true,
+  "ocr_enabled": false,
   "auto_orientation": true,
   "orientation_timeout": 30.0,
   "orientation_max_dimension": 2000,

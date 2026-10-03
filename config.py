@@ -12,7 +12,7 @@ class Settings:
     tesseract_path: str = os.environ.get("TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
     tessdata_dir: str = os.environ.get("TESSDATA_PREFIX", "")
     ocr_languages: str = "ara+eng"
-    ocr_enabled: bool = True
+    ocr_enabled: bool = False
     ocr_psm: int = 3
     ocr_timeout: int = 90
     ocr_min_confidence: float = 45.0

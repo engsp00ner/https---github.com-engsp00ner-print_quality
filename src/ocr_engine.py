@@ -43,7 +43,7 @@ class OrientationOCR:
         self.error = ""
         self.validation = {}
         if not settings.ocr_enabled:
-            self.error = "OCR explicitly disabled; content inspection is incomplete."
+            self.error = "OCR disabled; visual inspection only."
         else:
             try:
                 self.validation = validate_tesseract(settings)
@@ -123,6 +123,6 @@ class OCREngine:
 
     def extract(self, image):
         if not self.settings.ocr_enabled:
-            return OCRResult(status="UNAVAILABLE", error="OCR explicitly disabled; content inspection is incomplete.")
+            return OCRResult(status="SKIPPED", error="OCR disabled; visual inspection only.")
         from .paddle_runtime import extract
         return extract(image, self.settings)

@@ -123,8 +123,9 @@ class InspectionController(QObject):
         data["reference_path"] = self.session.reference
         data["printed_path"] = sample["path"]
         data["evidence_rows"] = evidence_rows(data)
-        data["coordinate_frames"] = {"markers": "normalized_reference", "original_printed": "loaded_printed",
-                                     "aligned_printed": "normalized_reference", "normalized_printed": "normalized_printed"}
+        frame = data.get("orientation", {}).get("comparison_frame", "normalized_reference")
+        data["coordinate_frames"] = {"markers": frame, "original_printed": "loaded_printed",
+                                     "aligned_printed": frame, "normalized_printed": "normalized_printed"}
         sample.update(result=data, state=result_state(data), stale=False,
                       rotation=data.get('orientation', {}).get('printed', sample.get('rotation', {})))
         if data.get('orientation', {}).get('reference'):
