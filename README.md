@@ -1,156 +1,233 @@
 # Print Defect Inspection System
 
-A Windows/PySide6 desktop prototype that compares a batch of printed pages with one correct reference. It combines alignment, Arabic/English OCR, strict text comparison, SSIM, extra/missing ink analysis, streaks and blob detection. The default result is the **printed page, aligned to the reference, with red defect rectangles**. Processing runs in a worker thread; results appear as each page finishes.
+A Windows desktop application for comparing printed or scanned documents against a reference image. It highlights potential printing defects, including extra ink, missing ink, faint smudges, streaks, and marks near page edges and corners.
 
-## Optional OCR and full-page visual inspection
+The application supports batch inspection, interactive defect markers, portable inspection files, and CSV/JSON reports. **OCR is optional and disabled by default**, so visual inspection can run without installing OCR engines or downloading recognition models.
 
-The setup header has an **OCR: OFF / OCR: ON** toggle. It defaults to OFF and saves
-its selection in `settings.json`. OFF runs alignment, SSIM, extra/missing ink,
-streaks, and blobs without starting or validating either OCR runtime. PASS then
-means the visual checks passed; results and CSV identify the `visual_only` scope.
-ON additionally runs text recognition and comparison; failed or uncertain selected
-OCR checks still require review. The toggle is locked during an inspection.
+## Features
 
-Printed-page rotation is matched to the reference using feature geometry first.
-With OCR off, the supplied reference orientation defines the comparison frame;
-manual rotation controls remain available. With automatic orientation disabled in
-visual-only mode, the supplied orientations are used unchanged.
+- **Reference-based comparison:** inspect multiple pages against one approved reference.
+- **Automatic alignment:** correct page rotation, skew, scale, and position using feature matching and image registration.
+- **Full-page inspection:** retain scan margins and corner marks that extend beyond the reference canvas.
+- **Visual defect detection:** combine structural similarity, extra/missing ink analysis, streak detection, and blob detection.
+- **Faint ink detection:** identify meaningful intensity changes on blank paper, including marks above the binary ink threshold.
+- **Optional text comparison:** enable OCR to compare recognized content and inspect text differences and confidence.
+- **Interactive results:** select errors from a table or image, zoom to their locations, and inspect diagnostic masks.
+- **Batch processing:** follow progress in a dedicated live inspection window and cancel after the current sample.
+- **Portable results:** save and reopen `.pinspect` inspections without rerunning analysis.
+- **PDF conversion:** export PDF pages to PNG before inspection.
+- **Local processing:** document comparison runs locally; OCR uses locally installed models when enabled.
 
-Registration preserves the full scan, including margins that extend beyond the
-reference. These exterior margins use white reference background, appropriate for
-full-page documents on white paper. Cropped references or colored paper need manual
-review. Faint marks on blank areas use the intensity-difference threshold as well
-as the minimum connected area; they need not cross the binary ink threshold.
-Low reference coverage still requires review, but visible regions are inspected.
-Unregistered pages never receive invented pixel comparisons.
+## Example documents
 
-## Launch on this machine
+These synthetic samples demonstrate the reference-and-sample workflow; they are not an accuracy benchmark.
+
+| Reference document | Sample with simulated defects |
+| --- | --- |
+| <img src="samples/standard.png" alt="Synthetic reference document" width="280"> | <img src="samples/printed_defective.png" alt="Synthetic document with added streaks, ink blobs, and missing print" width="280"> |
+
+## Technology
+
+| Component | Implementation |
+| --- | --- |
+| Desktop interface | Python and PySide6 / Qt |
+| Alignment and ink analysis | OpenCV and NumPy |
+| Structural comparison | scikit-image SSIM |
+| Image loading | Pillow |
+| PDF rendering | PyMuPDF |
+| Optional final text recognition | PaddleOCR in a separate Python environment |
+| Optional text-orientation probes | Tesseract through pytesseract |
+| Reports and saved sessions | JSON, CSV, and `.pinspect` archives |
+
+## Getting started
+
+The application has been developed and tested on **Windows with Python 3.14**. Commands below use PowerShell and should be run from the repository root after cloning or downloading it.
+
+### 1. Create the application environment
 
 ```powershell
-cd D:\masters\code
-.\print-defect\Scripts\Activate.ps1
-python app.py
+py -3.14 -m venv print-defect
+.\print-defect\Scripts\python.exe -m pip install --upgrade pip
+.\print-defect\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-Activation is optional:
+Using the environment's Python executable directly avoids the need to activate it.
+
+### 2. Configure the application
+
+For a new checkout, copy the example configuration:
 
 ```powershell
-cd D:\masters\code
+Copy-Item settings.example.json settings.json
+```
+
+Skip this step if you already have a configuration you want to keep. The application also runs with built-in defaults when `settings.json` is absent.
+
+Leave `ocr_enabled` set to `false` to start with visual inspection. The Tesseract executable, its language files, and PaddleOCR models are not required in this mode. The Python dependencies in `requirements.txt` are still required.
+
+### 3. Launch
+
+```powershell
 .\print-defect\Scripts\python.exe app.py
 ```
 
-If PowerShell blocks activation, change the policy for this terminal only:
+## Using the application
+
+1. Click **Change reference** and select the approved reference image.
+2. Use **Add images** or **Add folder** to select printed samples. Folder selection reads supported images directly inside that folder.
+3. Review the previews. Use the rotation controls or **Text direction...** for manual orientation corrections when needed.
+4. Choose **OCR: OFF** for visual inspection or **OCR: ON** for additional text recognition. The toggle saves your preference and is locked while inspection runs.
+5. Click **Start inspection** and follow the live progress.
+6. In the results window, select an error to highlight it, then use **Zoom to selected error** for a closer look.
+7. Switch between the aligned sample, original sample, reference, difference mask, extra ink, missing ink, and other diagnostic views.
+8. Use **Save inspection**, **Export CSV**, or **Export JSON report** to retain the results. Reopen portable files with **Open saved inspection**.
+
+Supported image formats are PNG, JPG/JPEG, BMP, and single-page TIF/TIFF. EXIF orientation is applied when loading images. Use **PDF to PNG** to convert PDF documents into individual page images.
+
+## Optional OCR setup
+
+Visual inspection and text recognition are separate checks. With OCR off, the reference's supplied orientation defines the comparison frame, and printed pages are matched to it using feature geometry.
+
+With OCR on, the application uses:
+
+- **PaddleOCR** for final text recognition, currently configured with an Arabic recognition model.
+- **Tesseract** for text-orientation detection when needed, using `ara+eng` by default.
+
+### PaddleOCR environment
+
+Install the pinned OCR dependencies in a separate **Python 3.11** environment. Do not install them into the main application's Python 3.14 environment.
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-.\print-defect\Scripts\Activate.ps1
+py -3.11 -m venv "$env:USERPROFILE\.na3em_ocr_benchmark\paddle"
+& "$env:USERPROFILE\.na3em_ocr_benchmark\paddle\Scripts\python.exe" -m pip install -r requirements-paddle.txt
 ```
 
-The existing Python 3.14.6 environment is retained. PySide6 is the only newly required Python package; TensorFlow is neither imported nor required. For a missing GUI dependency:
+The worker expects these locally provisioned model directories beneath the configured `paddle_model_dir`:
 
-```powershell
-.\print-defect\Scripts\python.exe -m pip install PySide6==6.11.2
+```text
+<model-directory>/
+  PP-OCRv6_medium_det/
+    inference.json
+    inference.pdiparams
+    inference.yml
+  arabic_PP-OCRv5_mobile_rec/
+    inference.json
+    inference.pdiparams
+    inference.yml
 ```
 
-To install all declared dependencies in the existing environment:
+Installing the Python packages alone does not provision these model files. Set **PaddleOCR Python executable** and **PaddleOCR local models** in Settings to the locations on your machine. The worker validates the pinned package versions and required model files before recognition.
+
+### Tesseract orientation support
+
+Install the Tesseract executable separately and provide `ara.traineddata` and `eng.traineddata` in its language-data directory. `osd.traineddata` is optional. Set the executable and tessdata paths in Settings; installing `pytesseract` alone does not install Tesseract.
+
+To check the configured Tesseract installation:
 
 ```powershell
-pip install -r requirements.txt
-```
-
-Requirements: Windows 11, Python 3.14, packages in `requirements.txt`, and Tesseract 5 with `ara` and `eng` language data. [Qt's installation documentation](https://doc.qt.io/qtforpython-6/) describes the PySide6 distribution.
-
-## Tesseract and Arabic
-
-`pytesseract` is a wrapper; the Tesseract executable is a separate dependency. The default executable path is configured once in `config.py`: `C:\Program Files\Tesseract-OCR\tesseract.exe`. Override it in **Settings**, `settings.json`, or the `TESSERACT_CMD` environment variable. Set `tessdata_dir` to this checkout's absolute `tessdata` directory; the local settings file is machine-specific and git-ignored.
-
-Install the Windows engine if necessary:
-
-```powershell
-winget install --id UB-Mannheim.TesseractOCR --exact --source winget --accept-package-agreements --accept-source-agreements
-```
-
-The Windows installer is linked from [Tesseract's installation guide](https://tesseract-ocr.github.io/tessdoc/Installation.html). Arabic requires `ara.traineddata`; English requires `eng.traineddata`. The application validates **both** before attempting OCR. When OCR is enabled, missing files produce explicit warnings; visual-only mode needs no OCR models. The default installer may contain English without Arabic.
-
-To provision local language data without changing Program Files:
-
-```powershell
-New-Item -ItemType Directory -Force .\tessdata
-Copy-Item 'C:\Program Files\Tesseract-OCR\tessdata\eng.traineddata' .\tessdata\eng.traineddata
-Invoke-WebRequest 'https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/main/ara.traineddata' -OutFile .\tessdata\ara.traineddata
-```
-
-Set `tessdata_dir` to the absolute project `tessdata` path in Settings. The Arabic model is from the [official tessdata_fast repository](https://github.com/tesseract-ocr/tessdata_fast), whose LSTM models use OEM 1. Alternatively put both language files in `C:\Program Files\Tesseract-OCR\tessdata` and leave `tessdata_dir` empty.
-
-Diagnostics (PowerShell needs the `&` call operator before a quoted executable):
-
-```powershell
-& 'C:\Program Files\Tesseract-OCR\tesseract.exe' --list-langs
-& 'C:\Program Files\Tesseract-OCR\tesseract.exe' --tessdata-dir 'D:\masters\code\tessdata' --list-langs
 .\print-defect\Scripts\python.exe app.py --diagnose
 ```
 
-The first command reports system language files; the second and application diagnostic use the project-local data. The configured default is `ara+eng`. Changing that list changes the languages being inspected.
+This command validates Tesseract and its requested language data; it does **not** validate PaddleOCR. Once both OCR components are configured, enable **OCR: ON** in the setup window.
 
-## Desktop workflow
+## How inspection works
 
-1. Click **Select Reference Image** and select the correct page. Its filename, full path and preview appear.
-2. Click **Select Images** for one/many printed pages, or **Select Folder** for all supported images directly inside a folder. Each selection replaces the previous printed list; folder loading is not recursive.
-3. To convert a PDF into page images, use **PDF TO PNG**. Select the PDF, review or change the output directory, and click **Extract pages**. The default is a sibling folder named after the PDF without its extension.
-4. Click **START INSPECTION**. The same cached reference is reused throughout the batch.
-4. Inspect the progressive results, summary and All/PASS/DEFECTIVE filter. **Cancel after current image** saves completed work and stops safely between images.
-5. Select a result row. The default **Defect Overlay** shows red rectangles. Other tabs provide Original Printed, Aligned Image, Difference Mask, Extra Ink, Missing Ink, Detected Lines and OCR Comparison.
-6. Use Fit, +/−, 100%, mouse wheel zoom and drag to pan. The original page is saved at full resolution; large GUI previews are reduced to bound display memory. At 100%, preview pixels are scaled to the original pixel coordinates.
-7. Read details for alignment statistics, OCR confidence, expected/detected text, defect coordinates, metrics and decision reasons. Arabic uses Qt's Unicode/bidirectional text rendering.
-8. Use **Open Results Folder** or **Export CSV**. CSV export includes all processed results, irrespective of the current table filter.
+```text
+Reference image + printed samples
+               |
+        Load and orient pages
+               |
+       Register each sample
+               |
+   Preserve the full comparison canvas
+               |
+   +-----------+------------+----------------+
+   |                        |                |
+Structural / ink       Streak / blob     Optional OCR
+  comparison             detection      and text comparison
+   |                        |                |
+   +------------------------+----------------+
+                            |
+                  Merge defect evidence
+                            |
+                Display and save results
+```
 
-Supported files: JPG/JPEG, PNG, BMP, TIF/TIFF, including Unicode paths. Transparency is composited onto white; EXIF orientation is applied. Multipage TIFFs must be split into one image per page. A configurable 40-million-pixel limit bounds per-page memory.
+The reference's features and preprocessing are cached across a batch. Registration uses ORB feature matching and RANSAC, with an ECC affine fallback. Visual detectors run independently so one failed check does not discard evidence from successful checks.
 
-## Pipeline and decisions
+Low page coverage requires review, but detectable regions are still inspected. Failed registration skips pixel comparisons because the images cannot be compared reliably.
 
-`InspectionEngine.inspect(reference_path, printed_path, batch_dir=None)` is the high-level API. No Qt dependencies exist in the backend. A reusable engine caches reference grayscale, ink mask, ORB features and OCR until its path/size/modification timestamp changes. Keep one engine per sequential batch; the pytesseract executable setting is process-global.
+### Understanding results
 
-- **Alignment:** ORB, unique ratio-filtered matches, RANSAC homography, inlier checks and geometric plausibility. ECC affine is the fallback. Only the printed image is transformed. Exact duplicates use identity. Metrics include both keypoint counts, matches, inliers, inlier ratio, transform and coverage. Invalid warp borders are excluded; inadequate coverage is flagged. Failed registration skips pixel analysis and cannot pass.
-- **OCR:** Tesseract `image_to_data` provides text, confidence and coordinates in the aligned reference frame. Reference OCR runs once per batch. OCR and print preprocessing are separate; print contrast is preserved so faint ink is measurable. Tesseract's logical word order is retained, including RTL/mixed lines.
-- **Text:** strict Unicode preserves Arabic letters, dots, diacritics, punctuation and numbers. Only whitespace is collapsed for comparison. Strict multiline text and whitespace-only diagnostic text are retained. Character, word and line differences are exported. CER/WER use Levenshtein distance divided by reference length; insertions can produce rates above 1. Text similarity is `1 - character_distance / max(reference_length, printed_length, 1)`. Word mismatches/deletions map to printed/reference boxes. Low-confidence differences remain review candidates rather than being silently discarded.
-- **SSIM:** calculated on aligned grayscale with data range 255, averaged over valid interior pixels. Local SSIM differences also need meaningful intensity changes and minimum component area. SSIM is a structural metric, not a probability of correctness.
-- **Ink:** threshold masks and a configurable registration tolerance detect extra/missing strokes. Intensity differences inside ink also expose fading and darkening. Ratios use valid compared page pixels as the denominator. Reports retain raw evidence counts and noise-filtered counts. Ratios and decisions use filtered counts.
-- **Streaks/blobs:** directional morphology operates on extra/missing differences, preserving legitimate reference lines. Black/white compact components are labeled as blob candidates. These geometric categories are heuristics and can overlap other causes.
-- **Merging:** IoU/containment merges supporting detections into local boxes, retaining algorithm labels and evidence. Specific text/streak boxes take priority over broad visual regions. Per-algorithm counts may exceed the final merged box count.
+| Display state | Meaning |
+| --- | --- |
+| **Passed** | Required checks completed, with no detected defects or threshold failures. With OCR off, this covers visual checks only. |
+| **Defective** | Inspection completed and found localized defects or out-of-range metrics. |
+| **Review required** | Inspection is incomplete or uncertain, for example due to low coverage, unresolved orientation, or failed/low-confidence enabled OCR. |
+| **Failed** | A processing error prevented inspection from completing. |
 
-Every page has PASS or DEFECTIVE. PASS requires completed alignment, adequate coverage, no localized defects and passing aggregate thresholds; OCR is additionally required only when enabled. **DEFECTIVE · review** means checks were incomplete; it does not assert a confirmed physical defect. Failed selected checks and insufficient coverage are never silently counted as clean. A low-confidence OCR page is also flagged for review. A page can fail an aggregate metric without a localized box; the details panel explains that reason.
+The underlying engine reports `PASS` or `DEFECTIVE`, alongside completion status and decision reasons. An incomplete `DEFECTIVE` result does not by itself confirm a physical printing defect.
 
-Confidence on OCR defects is OCR recognition confidence. Classical detectors use rule-based evidence, not calibrated defect probabilities. OCR can misread an identical wrong character on both pages; a successful OCR call is not a guarantee of content accuracy. Empty OCR results on image-only/blank documents are valid. The classical visual checks remain active.
+## Configuration
 
-## Configuration and calibration
+Use **Settings** for common options. Additional options and validation rules are defined in [config.py](config.py). Store local overrides in `settings.json`; an example is included in [settings.example.json](settings.example.json).
 
-Use **Settings** for common controls. Advanced values are in `config.py`; put overrides in root `settings.json` (see `settings.example.json`). Invalid keys/values produce a startup error. Settings are captured in reports for reproducibility.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `ocr_enabled` | `false` | Enable or disable optional OCR checks |
+| `auto_orientation` | `true` | Resolve page orientation automatically |
+| `ssim_threshold` | `0.95` | Minimum aggregate structural similarity |
+| `extra_ink_threshold` | `0.002` | Maximum extra-ink ratio |
+| `missing_ink_threshold` | `0.002` | Maximum missing-ink ratio |
+| `min_defect_area` | `40` | Minimum connected defect area in comparison pixels |
+| `registration_tolerance` | `1` | Pixel tolerance around existing ink |
+| `intensity_difference` | `35` | Minimum meaningful grayscale difference |
+| `min_coverage` | `0.95` | Required reference coverage for a complete inspection |
 
-| Setting | Default | Meaning |
-|---|---:|---|
-| `ssim_threshold` | 0.95 | Minimum aggregate SSIM |
-| `text_similarity_threshold` | 0.98 | Minimum text similarity |
-| `extra_ink_threshold` | 0.002 | Maximum significant extra ink / compared pixels |
-| `missing_ink_threshold` | 0.002 | Maximum significant missing ink / compared pixels |
-| `min_defect_area` / `min_blob_area` | 40 | Minimum significant connected area in pixels |
-| `min_line_length` | 100 | Minimum horizontal/vertical streak length |
-| `registration_tolerance` | 1 | Ink mask neighbourhood tolerance in pixels |
-| `ink_threshold` | 180 | Grayscale intensity below which pixels are ink |
-| `intensity_difference` | 35 | Minimum meaningful grayscale difference |
-| `ink_density_difference` | 80 | Minimum nearby stroke-core intensity change for fading/darkening |
-| `min_coverage` | 0.95 | Required overlap after registration |
-| `ocr_min_confidence` | 45 | OCR confidence below which review is required |
+Thresholds are starting values and should be calibrated using representative clean and defective scans. Localized defects can fail inspection even when aggregate ratios remain below their thresholds.
 
-**These are experimental starting values, not validated manufacturing tolerances.** Localized significant defects also trigger failure even when whole-page averages pass. Calibrate on labeled clean and faulty pages at the intended scanner DPI. Increasing area/tolerance suppresses noise but may hide character dots or tiny broken strokes. Illumination, JPEG artifacts, paper texture and repeated layouts can affect registration and detection. No representative real-document dataset was supplied; synthetic verification cannot establish field accuracy.
+## Command-line tools
+
+Use the application's Python environment for these commands.
+
+Generate synthetic demonstration images:
+
+```powershell
+.\print-defect\Scripts\python.exe tools\create_test_defects.py --demo
+```
+
+Inspect selected images:
+
+```powershell
+.\print-defect\Scripts\python.exe tools\inspect_batch.py --reference samples\standard.png --images samples\printed_clean.png samples\printed_defective.png
+```
+
+Inspect every supported image directly inside a folder:
+
+```powershell
+.\print-defect\Scripts\python.exe tools\inspect_batch.py --reference samples\standard.png --folder samples
+```
+
+The batch runner uses `settings.json`, including the OCR setting. It returns exit code `0` when every inspection is complete and `2` when at least one is incomplete; completion does not mean every sample passed.
+
+Convert a PDF to PNG pages:
+
+```powershell
+.\print-defect\Scripts\python.exe pdf_to_images.py document.pdf --dpi 200
+```
+
+The converter creates a folder beside the PDF and refuses to overwrite existing page images.
 
 ## Saved outputs
 
-Each run uses a timestamp and random suffix; repeated filenames cannot overwrite each other.
+Each batch creates a uniquely named directory under `outputs/` by default:
 
 ```text
-outputs/batch_YYYYMMDD_HHMMSS_<id>/
+outputs/batch_<timestamp>_<id>/
   page_<filename>_<id>/
     original_printed.png
+    normalized_printed.png
+    normalized_reference.png
     aligned_printed.png
     valid_comparison_mask.png
     difference_mask.png
@@ -163,90 +240,45 @@ outputs/batch_YYYYMMDD_HHMMSS_<id>/
   batch_report.csv
 ```
 
-Aligned outputs and box coordinates use the full **reference resolution**. Original Printed preserves the decoded input resolution. Thus scans at different DPI are resampled to the reference grid, not the GUI preview. Red annotation uses OpenCV BGR `(0, 0, 255)`. Labels stay short and in English; full Unicode expected/detected text is available in the GUI/JSON.
+Reports include check statuses, decision reasons, defect coordinates, alignment evidence, metrics, processing times, settings, and OCR results when enabled. Comparison images and defect markers share a full-page coordinate frame; reference padding and transformation metadata are retained in the report.
 
-JSON includes settings, OCR words/confidence, character/word/line differences, registration quality, defect evidence and processing times. Per-image time includes image artifacts, excluding final JSON write; the first image in a direct API call can include reference preparation. The worker prepares the reference separately. Batch duration includes processing/reference preparation, excluding final batch report serialization. CSV uses UTF-8 with BOM for Excel and escapes formula-like string values. Outputs may contain document content; all processing and reporting run locally.
+Portable `.pinspect` files package inspection data and images for reopening through the desktop application. Runtime logs are written to `logs/inspection.log`.
 
-## Samples, tests and command-line inspection
+## Project structure
 
-```powershell
-python tools\create_test_defects.py --demo
-python tools\create_test_defects.py --input samples\standard.png --output samples\printed_custom.png --defects vertical blob missing rotation
-python tools\inspect_batch.py --reference samples\standard.png --images samples\printed_clean.png samples\printed_defective.png samples\printed_misaligned.png
-python -m compileall -q app.py config.py src gui tools tests
-python -m unittest discover -s tests -v
-python app.py --diagnose
-python app.py --smoke-test
-python tools\verify_gui.py
+```text
+app.py                    Desktop entry point and diagnostics
+config.py                 Settings, defaults, and validation
+pdf_to_images.py          PDF-to-PNG converter
+gui/                      Setup, live inspection, results, and image viewers
+src/                      Alignment, detection, OCR, reporting, and archives
+tools/                    Batch runner, sample generation, and verification tools
+tests/                    Automated backend, GUI, and archive tests
+samples/                  Synthetic demonstration images
+requirements.txt          Main application dependencies
+requirements-paddle.txt   Optional isolated OCR dependencies
+settings.example.json     Example local configuration
 ```
 
-The generator supports vertical/horizontal streaks, blobs, missing print, blur, rotation and shift. The unittest suite covers Unicode I/O, failed/successful Tesseract validation, alignment, SSIM, ink/noise/streaks, Arabic/numeric text differences, merging, caching, red overlays and report generation. It mocks OCR for deterministic pipeline tests; real OCR is exercised separately without asserting exact text.
+## Tests and validation
 
-## Troubleshooting and optional features
-
-- **Tesseract missing:** install the executable and set its exact path in Settings. `pip install pytesseract` alone does not install it.
-- **Arabic missing:** install `ara.traineddata` in the configured data directory, then run `app.py --diagnose`. Never silently substitute English-only OCR.
-- **Alignment failure:** choose matching full-page scans with enough features. Tiny/sparse or strongly cropped pages may need manual review. Resized fallback images are previews only; their pixel metrics are unavailable.
-- **OCR timeout/failure:** check languages, scan quality and `ocr_timeout`. An incomplete result is saved with its error.
-- **Cannot save outputs:** select a writable output directory. Inspect `logs/inspection.log`; failed writes are surfaced in the GUI/results.
-- **GUI closes during processing:** closing requests cancellation and waits for the current image; the worker is never force-terminated.
-- **Too many/too few boxes:** calibrate thresholds and acquisition conditions using known ground truth; retain the individual metrics for evaluation.
-- **CNN/VGG16:** intentionally disabled and not installed. The complete core workflow uses OCR/classical CV. No Python downgrade or TensorFlow dependency is needed. There is no trained defect classifier or claimed model accuracy.
-
-The code is a working prototype for evaluation, not a calibrated production acceptance system.
-
-## Automatic text direction
-
-Pages are normalized to a shared orientation before alignment and visual comparison.
-With OCR off, the reference stays in its supplied orientation; with OCR on, reference
-text orientation is detected before feature preparation. Supported corrections are 0, 90, 180,
-and 270 degrees clockwise after EXIF handling. Arabic reading order is retained; strings
-are never reversed to correct a rotated page.
-
-Printed pages first use feature matching against the reference. When OCR is enabled,
-the text direction detector tries optional `osd.traineddata`. Weak or unavailable OSD falls back to
-four sparse-text OCR probes (`ara+eng` by default), requiring enough recognized characters,
-confidence, and a clear score margin. Printed pages with ambiguous text may use a unique,
-strong geometric match to a resolved reference. Scores are heuristic evidence, not calibrated
-probabilities. Grid-heavy, blank, mixed-orientation, mirrored, and very sparse pages may need
-manual review. Fine skew is left to existing registration, not this quarter-turn detector.
-
-Use **Text direction...** beside Settings to choose Auto or a clockwise correction for the
-reference and each printed page. Saving clears displayed results and requires another run.
-Overrides apply to the current selection/session. With OCR enabled, disabling automatic detection requires explicit manual corrections.
-With OCR disabled, disabling automatic detection keeps the supplied orientations.
-An unresolved direction cannot produce PASS. Cancellation still finishes the current page.
-
-Settings in `settings.example.json` include `auto_orientation`, `orientation_timeout` (30 seconds
-shared across probes), `orientation_max_dimension` (2000 pixels), OSD confidence (15), minimum
-usable characters (12), recognition evidence confidence (55), and relative margin (0.20).
-Native image analysis/registration can finish its current operation after the budget expires;
-no further candidate is started, and incomplete candidate sets are not accepted. Tune thresholds
-against representative documents. Original source files and inspection pixels are not filtered
-or resized by quarter-turn correction; downsampling is restricted to direction analysis copies.
-
-The reference panel and **Upright Reference**, **Upright Printed** tabs show normalized images.
-**Original Printed** retains the loaded EXIF-corrected image. OCR boxes, masks, and defect overlays
-use the full comparison canvas coordinate frame. Its `reference_offset` records
-the reference padding; transforms include this offset. Old saved inspections retain
-their original normalized-reference frame. Schema 2 JSON reports include direction evidence,
-pixel-center rotation matrices and inverses, and the composed loaded-printed-to-reference transform.
-CSV reports include correction angles and direction statuses. Reference caching also tracks
-settings and manual corrections.
-
-For the backend, `InspectionEngine(settings, reference_orientation=90,
-printed_orientations={image_path: 180})` accepts optional overrides; omitted values use Auto.
-`OCREngine.extract()` remains a low-level recognizer of supplied pixels. Use the inspection
-engine, or `OrientationDetector(settings, ocr).detect(image)`, for automatic page normalization.
-
-Run a reproducible live check (the expected correction is manually established ground truth):
+Run the automated tests:
 
 ```powershell
-python tools\verify_orientation.py standard_image1.jpeg --expected-correction 90 --all-pairs
+.\print-defect\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
-It records baseline/final OCR, an additional sparse-layout diagnostic, model hashes, all four
-rotations, and all 16 reference/printed combinations under `outputs/orientation_validation`.
-Orientation correctness does not guarantee complete or accurate OCR: the supplied Arabic form
-still loses headings with the existing final `ocr_psm=3`, and sparse mode still makes character
-errors. See `ORIENTATION_VALIDATION.md` for measured results and limits.
+Tests cover alignment, orientation, corner and faint-ink detection, optional OCR, text comparison, GUI workflows, and portable archives. OCR fixtures are mocked where deterministic behavior is needed; live checks depend on installed runtimes and models.
+
+See [Visual Mode Validation](VISUAL_MODE_VALIDATION.md) for the recorded 54-page comparison. That local run measured approximately **2.5 seconds per page at the median**, with OCR off. Timing depends on image size, hardware, settings, and output storage. Generated output links in validation notes are local artifacts and may not be included in a GitHub checkout.
+
+## Limitations and troubleshooting
+
+- **Unexpected markers:** scan noise, paper texture, compression, and small registration differences can produce findings. Inspect diagnostic masks and calibrate thresholds on labeled examples.
+- **Missed small defects:** minimum-area filtering and registration tolerance can suppress tiny marks. Lowering these settings can also increase noise.
+- **Incorrect orientation or failed alignment:** verify that the sample matches the reference layout and use manual rotation when necessary. Sparse, blank, cropped, or repetitive pages may require review.
+- **Page margins:** areas outside the reference use white background. Use full-page references on white paper; cropped references and colored paper need additional review.
+- **OCR errors:** inspect the configured executable/model paths, recognition confidence, and reported errors. Keep OCR off when only visual inspection is needed.
+- **Output errors:** choose a writable output directory and inspect the application log.
+
+This project is a prototype for evaluating print inspection workflows. Detection thresholds and OCR confidence are not guarantees of accuracy or calibrated production acceptance criteria.
